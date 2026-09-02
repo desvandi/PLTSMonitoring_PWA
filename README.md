@@ -1,10 +1,10 @@
 # PLTS Monitor PWA — Dasbor Next.js + Push-Alarm MonitorIoT
 
 **Version:** 1.7.x (E-WAVE/WAVE-7) · **Framework:** Next.js 16 (App Router, output standalone) · **Status:** LIVE di
-[`jmsepltsmonitoring.vercel.app`](https://jmsepltsmonitoring.vercel.app) + PWA standalone di
+[`plts-monitoring-pwa.vercel.app`](https://plts-monitoring-pwa.vercel.app) + PWA standalone di
 [`plts-monitor-push-alarm.vercel.app`](https://plts-monitor-push-alarm.vercel.app)
 · **License:** MIT · **Repositori kembar (backend/firmware):**
-[desvandi/plts_monitor_firmware-code.gs-etc](https://github.com/desvandi/plts_monitor_firmware-code.gs-etc)
+[desvandi/PLTSMonitoring_Firmware-Backend](https://github.com/desvandi/PLTSMonitoring_Firmware-Backend)
 
 Frontend PWA production-grade untuk sistem monitoring PLTS 48 V LiFePO4 —
 **satu aplikasi dengan dua wajah**:
@@ -23,7 +23,7 @@ telemetri basi → ditandai STALE (bukan dipretends real-time).
 
 > **Dokumen operasional utama:**
 > [`Panduan_Deploy_Production_MonitorIoT.pdf`](Panduan_Deploy_Production_MonitorIoT.pdf)
-> (di **akar** repositori ini, Edisi 3, 38 halaman) — kamus klik-demi-klik
+> (di **akar** repositori ini, Edisi 4, 36 halaman) — kamus klik-demi-klik
 > semua parameter/env/kredensial, prosedur deploy GAS → PWA → firmware,
 > peran dua proyek Vercel (Bab 2.3), dan peta platform gratis Rp0 (Lampiran A).
 > Salinan identik ada di akar repo kembar.
@@ -61,7 +61,8 @@ Next.js 16 (App Router, output: standalone)
 └── 3 jalur backend (bisa dikombinasikan):
     1. ESP32 REST (LAN / Cloudflare Tunnel) — realtime, config, OTA
     2. Google Apps Script — history, laporan, backup, insights, PUSH ALARM
-    3. MQTT broker (wss/TLS) — realtime subscribe (monitoring-only, opsional)
+    3. MQTT broker (wss/TLS) — realtime subscribe (monitoring-only, opsional;
+       guard W7-1: hanya `wss://` yang diterima — `ws://` ditolak di produksi)
 ```
 
 PWA **stateless & client-agnostic** — deploy sekali, setiap pengguna
@@ -75,7 +76,7 @@ rincian kuota vs beban 2 HP + 1 modul ada di Lampiran A panduan PDF).
 
 | Proyek Vercel | URL | Isi |
 | :--- | :--- | :--- |
-| `jmseplts_monitoring` | `jmsepltsmonitoring.vercel.app` | **Aplikasi utama** — dasbor PLTS + push-alarm natif (auto-deploy dari repo ini, branch `main`) |
+| `plts-monitoring-pwa` | `plts-monitoring-pwa.vercel.app` | **Aplikasi utama** — dasbor PLTS + push-alarm natif (auto-deploy dari repo ini, branch `main`) |
 | `plts-monitor-push-alarm` | `plts-monitor-push-alarm.vercel.app` | **PWA standalone** — alarm ringan dari folder `pwa-push-alarm/` |
 
 > **Aturan anti-duplikat:** 1 HP cukup berlangganan notifikasi dari SATU
@@ -102,7 +103,7 @@ rincian kuota vs beban 2 HP + 1 modul ada di Lampiran A panduan PDF).
 
 ### 2.2 Opsi 1 — Vercel (direkomendasikan)
 
-1. **Add New Project** → import repo `plts_monitor_PWA_only`.
+1. **Add New Project** → import repo `PLTSMonitoring_PWA`.
 2. Framework preset: **Next.js** (terdeteksi otomatis). Build command
    `next build`, output standalone ditangani otomatis oleh Vercel.
 3. Environment variables: **tidak wajib** untuk mode zero-touch (semua
@@ -118,6 +119,15 @@ rincian kuota vs beban 2 HP + 1 modul ada di Lampiran A panduan PDF).
 
 Konfigurasi berikut sudah terpasang di repo dan akun Vercel — tidak perlu
 langkah manual, tapi penting dipahami saat meng-audit atau pindah project:
+
+> **Catatan migrasi proyek (2026-09-02/03):** aplikasi utama kini dilayani
+> proyek Vercel **`plts-monitoring-pwa`** (URL
+> `plts-monitoring-pwa.vercel.app`, auto-deploy tetap dari repo ini, branch
+> `main`). Proyek lama `jmse_plts_monitoring` (domain
+> `jmsepltsmonitoring.vercel.app`) sudah tidak ada di akun — URL lama mati.
+> Region fungsi `sin1` dipulihkan via API pada 2026-09-03 (berlaku pada
+> deploy berikutnya); cron harian `0 20 * * *`, Web Analytics, dan Speed
+> Insights aktif di proyek baru (terbawa dari konfigurasi repo + API).
 
 | Item | Nilai | Keterangan |
 | :--- | :--- | :--- |
@@ -162,8 +172,8 @@ Plus, WAF Rate Limiting, OWASP CRS.
 ### 2.3 Opsi 2 — Self-host (standalone server)
 
 ```bash
-git clone https://github.com/desvandi/plts_monitor_PWA_only.git
-cd plts_monitor_PWA_only
+git clone https://github.com/desvandi/PLTSMonitoring_PWA.git
+cd PLTSMonitoring_PWA
 npm install
 npm run build          # build + salin static & public ke .next/standalone
 PORT=3000 node .next/standalone/server.js   # atau: bun (lihat npm start)
@@ -187,7 +197,7 @@ Salin `.env.example` → `.env.local` (dev) atau dashboard host (produksi).
 | Variabel | Wajib? | Fungsi |
 | :--- | :--- | :--- |
 | `NEXT_PUBLIC_API_BASE_URL` | — | Base URL REST ESP32 (LAN/tunnel). Kosong = mode MQTT-only |
-| `NEXT_PUBLIC_MQTT_BROKER_URL` | — | `wss://broker:8884/mqtt` untuk realtime produksi |
+| `NEXT_PUBLIC_MQTT_BROKER_URL` | — | `wss://broker:8884/mqtt` untuk realtime produksi — **wss:// wajib** (guard W7-1 menolak `ws://` di produksi; `ws://` hanya `NODE_ENV=development`) |
 | `NEXT_PUBLIC_MQTT_USERNAME` / `NEXT_PUBLIC_MQTT_PASSWORD` | — | Kredensial broker (terpisah dari ESP32 — isolasi blast-radius) |
 | `JWT_SECRET` | hanya mode LAN | Minimal 32 karakter; tanpa ini login LAN = 403 fail-closed |
 | `NEXT_PUBLIC_PUSH_API_BASE` | — | Default build-time URL GAS PushService (opsional; isian Settings menimpa) |
@@ -419,7 +429,8 @@ menduga-duga antara shunt dan OCV.
 ## 11. Testing & QA
 
 ```bash
-npm run test         # vitest (truth-semantics + soc-provenance + sysconfig + push-alarm)
+npm run test         # vitest — 123 asersi (truth-semantics, soc-provenance, sysconfig,
+                     #   push-alarm, admin-token-session, mqtt TLS-guard)
 npm run typecheck    # tsc --noEmit — 0 error
 npm run build        # next build — sukses (standalone)
 npm run lint         # eslint — 0 error
@@ -456,6 +467,14 @@ deferral macrotask, deps presisi. Aturan `react-hooks/*` tetap `error`;
   derived-state. 2026-09-01 — decoder base64url `push-manager.js`
   menormalkan `-`/`_` (versi lama gagal subscribe untuk ~93% kunci VAPID
   acak; mock `atob` harness dikeraskan + asersi regresi).
+  2026-09-02 — **remediasi audit P1/P2 + wave 7-10**: ADMIN_TOKEN kini
+  *session-scoped* (`src/lib/adminTokenSession.ts` — sessionStorage +
+  fallback memori + migrasi satu kali; TIDAK PERNAH di localStorage,
+  tab baru diminta ulang = fail-closed); skema darurat 13 field
+  (`sensorFailPolicy`, default fail-closed, sinkron GAS + firmware v1.7.0);
+  sinkron binari firmware-generic v1.7.0 via skrip rilis resmi; guard
+  TLS-only MQTT W7-1 (`connectMqtt()` menolak selain `wss://` di produksi,
+  `ws://` hanya dev — 6 uji baru `mqtt.test.ts`; suite 123/123).
 
 ## 13. Panduan Wiring (ringkas)
 
@@ -476,6 +495,7 @@ ACS712 di fasa L saja → GPIO 35 · RS485 (MAX3485) TX 16/RX 17/DE 4 · CAN
 | Handshake gagal (CORS) | Deployment GAS bukan "Anyone" | Redeploy GAS dengan akses Anyone |
 | Login LAN 403 di produksi | `JWT_SECRET` kosong / mock auth fail-closed | Perilaku benar — mode GAS Cloud viewer aktif bila profil GAS tersimpan; untuk mutasi set `NEXT_PUBLIC_API_BASE_URL` + login operator |
 | Data realtime tidak muncul | Broker MQTT tidak di-set / ESP32 offline | Cek `NEXT_PUBLIC_MQTT_BROKER_URL` + koneksi device |
+| MQTT menolak koneksi dengan error skema | Guard W7-1: `ws://` ditolak di produksi (hanya `wss://`) | Ganti URL broker ke `wss://...` (mis. port TLS 8884); `ws://` hanya untuk `NODE_ENV=development` |
 | Push alarm tidak masuk saat aplikasi ditutup | Izin notifikasi mati / langganan dari aplikasi lain | Cek izin OS+browser; pastikan subscribe dari SATU aplikasi (Bab 2.3 panduan) |
 | Notifikasi alarm dobel | Berlangganan dari Next.js DAN PWA standalone | Berhenti berlangganan dari salah satu |
 | Badge SOC "Unknown Source" | Firmware < v1.6.0 (memang jujur) | Upgrade firmware; badge merah bukan bug |
