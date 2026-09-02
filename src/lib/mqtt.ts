@@ -21,9 +21,12 @@
 import mqtt from "mqtt";
 import type { SystemStatus, ActivityLog } from "./types";
 
-const MQTT_BROKER_URL = process.env.NEXT_PUBLIC_MQTT_BROKER_URL || "";
-const MQTT_BROKER_USERNAME = process.env.NEXT_PUBLIC_MQTT_USERNAME || "";
-const MQTT_BROKER_PASSWORD = process.env.NEXT_PUBLIC_MQTT_PASSWORD || "";
+// [W7-1] Read at CALL time (not module load): identical runtime behavior in
+// the browser (Next.js inlines NEXT_PUBLIC_* at build time) but lets tests
+// stub the environment per-case without module gymnastics.
+const brokerUrl = (): string => process.env.NEXT_PUBLIC_MQTT_BROKER_URL || "";
+const brokerUsername = (): string => process.env.NEXT_PUBLIC_MQTT_USERNAME || "";
+const brokerPassword = (): string => process.env.NEXT_PUBLIC_MQTT_PASSWORD || "";
 
 // [PWA-19] Diagnostics logging gated to development — the previous build
 // logged broker URL + clientId + granted topics to the browser console.
@@ -103,6 +106,7 @@ export function isMqttConnected(): boolean {
 
 export function connectMqtt(deviceId: string): Promise<void> {
   return new Promise((resolve, reject) => {
+    const MQTT_BROKER_URL = brokerUrl();
     // [PWA-03] Fail closed: no broker URL → refuse to connect (NEVER fall
     // back to a public unauthenticated broker).
     if (!MQTT_BROKER_URL) {
@@ -112,6 +116,42 @@ export function connectMqtt(deviceId: string): Promise<void> {
         ),
       );
       return;
+    }
+    // [W7-1 REMEDIATION 2026-09] TLS-only broker URL — the PWA counterpart of
+    // the firmware PRODUCTION_BUILD #error guards (port 8883/8884 + root CA).
+    // A ws:// (plaintext) URL would send telemetry + viewer credentials in
+    // the clear; it is now rejected. EXPLICIT dev bypass only, mirroring the
+    // firmware's DEVELOPMENT_BUILD setInsecure() pattern: visible, never
+    // silent, never available in a production build.
+    // NOTE: new URL() normalizes the scheme to lowercase (RFC 3986 — scheme
+    // is case-insensitive), so "WSS://…" is accepted as TLS.
+    {
+      let parsed: URL;
+      try {
+        parsed = new URL(MQTT_BROKER_URL.trim());
+      } catch {
+        reject(
+          new Error(
+            "MQTT broker URL is not a valid absolute URL — expected " +
+              "wss://host:port/path. Set NEXT_PUBLIC_MQTT_BROKER_URL to an " +
+              "authenticated TLS endpoint.",
+          ),
+        );
+        return;
+      }
+      const isTls = parsed.protocol === "wss:";
+      const devBypass =
+        parsed.protocol === "ws:" && process.env.NODE_ENV === "development";
+      if (!isTls && !devBypass) {
+        reject(
+          new Error(
+            `MQTT broker URL must use wss:// (TLS) — got "${parsed.protocol}". ` +
+              "Refusing a plaintext connection; set NEXT_PUBLIC_MQTT_BROKER_URL " +
+              "to an authenticated TLS endpoint (wss://…).",
+          ),
+        );
+        return;
+      }
     }
     if (state.client) {
       state.client.end(true);
@@ -138,8 +178,8 @@ export function connectMqtt(deviceId: string): Promise<void> {
       reconnectPeriod: 5000,
       connectTimeout: 10000,
       clean: true,
-      ...(MQTT_BROKER_USERNAME ? { username: MQTT_BROKER_USERNAME } : {}),
-      ...(MQTT_BROKER_PASSWORD ? { password: MQTT_BROKER_PASSWORD } : {}),
+      ...(brokerUsername() ? { username: brokerUsername() } : {}),
+      ...(brokerPassword() ? { password: brokerPassword() } : {}),
     });
 
     state.client = client;
