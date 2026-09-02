@@ -530,7 +530,7 @@ sendiri dengan pesan jujur (fail-closed). Token perangkat
 terpisah, sama seperti OTA.
 
 **Komponen baru**: `src/components/emergency/` (panel + diagram SVG),
-`src/lib/emergency.ts` (klien GAS + skema 12 field),
+`src/lib/emergency.ts` (klien GAS + skema **13** field — v1.7.0 [P1] menambah `sensorFailPolicy`, fail-closed default), `src/lib/adminTokenSession.ts` (ADMIN_TOKEN session-scoped, tidak pernah di localStorage),
 `src/lib/energyFlow.ts` (model murni), `src/lib/gasEnvelope.ts`
 (parser blok `emergency` + `i_ac_gen`), field `admin_token` per perangkat
 di `PLTS_SYS_CONFIG`, dan kartu **Arus Jenset → Inverter** di view AC

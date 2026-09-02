@@ -21,7 +21,7 @@ const device = {
 };
 
 describe("EMERGENCY_CONFIG_FIELDS schema (shared 3-layer table)", () => {
-  it("has exactly the 12 fields the GAS + firmware tables define", () => {
+  it("has exactly the 13 fields the GAS + firmware tables define", () => {
     expect(EMERGENCY_CONFIG_FIELDS.map((f) => f.key)).toEqual([
       "vbatLowV",
       "vbatLowHystV",
@@ -35,6 +35,7 @@ describe("EMERGENCY_CONFIG_FIELDS schema (shared 3-layer table)", () => {
       "relayPin",
       "estopPin",
       "estopEnabled",
+      "sensorFailPolicy",
     ]);
   });
   it("defaults match the firmware struct defaults", () => {
@@ -51,7 +52,13 @@ describe("EMERGENCY_CONFIG_FIELDS schema (shared 3-layer table)", () => {
       relayPin: 27,
       estopPin: 14,
       estopEnabled: 1,
+      sensorFailPolicy: 1,
     });
+  });
+  it("v1.7.0 [P1-SC1] sensorFailPolicy clamps to 0/1 (fail-closed default)", () => {
+    expect(normalizeEmergencyConfig({ sensorFailPolicy: 7 }).sensorFailPolicy).toBe(1);
+    expect(normalizeEmergencyConfig({ sensorFailPolicy: 0 }).sensorFailPolicy).toBe(0);
+    expect(DEFAULT_EMERGENCY_CONFIG.sensorFailPolicy).toBe(1);
   });
 });
 

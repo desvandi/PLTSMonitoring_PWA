@@ -38,6 +38,8 @@ export interface EmergencyConfig {
   relayPin: number;
   estopPin: number;
   estopEnabled: number;
+  /** v1.7.0 [P1-SC1] — 1 = fail-closed (safety sensors mandatory), 0 = legacy opt-out. */
+  sensorFailPolicy: number;
 }
 
 /** [field, min, max, default] — the single schema shared by GAS + firmware. */
@@ -59,6 +61,13 @@ export const EMERGENCY_CONFIG_FIELDS: Array<{
   { key: "relayPin", min: 12, max: 39, dflt: 27 },
   { key: "estopPin", min: -1, max: 39, dflt: 14 },
   { key: "estopEnabled", min: 0, max: 1, dflt: 1 },
+  // v1.7.0 [P1-SC1] — safety-sensor failure policy. Default 1 = fail-closed:
+  // current sensors feed the I_DC/I_AC_LOAD/I_AC_GEN trip triggers, so an
+  // absent/invalid sensor blocks ARM (and the firmware trips SENSOR_LOSS
+  // while RUN). 0 = explicit operator opt-out (bench/commissioning only).
+  // Must stay in lockstep with Code.gs EMERGENCY_CONFIG_FIELDS and the
+  // firmware EmergencyConfig struct (13 fields).
+  { key: "sensorFailPolicy", min: 0, max: 1, dflt: 1 },
 ];
 
 export const DEFAULT_EMERGENCY_CONFIG: EmergencyConfig = EMERGENCY_CONFIG_FIELDS.reduce(
@@ -124,6 +133,12 @@ export function parseEmergencyBlock(raw: unknown): EmergencySnapshot {
 // extracted here so tests can mock global fetch)
 // ---------------------------------------------------------------------------
 
+// [P1-3 REMEDIATION 2026-09] the admin token resolves from the SESSION-scoped
+// store (lib/adminTokenSession.ts) — callers pass a profile whose token was
+// attached at runtime via withAdminToken(); the persisted profile never
+// carries it.
+import { resolveAdminToken } from './adminTokenSession';
+
 export interface EmergencyCommandResult {
   ok: boolean;
   message: string;
@@ -147,17 +162,20 @@ export async function sendEmergencyCommand(
   opts: { note?: string; config?: EmergencyConfig } = {},
   timeoutMs = 12000,
 ): Promise<EmergencyCommandResult> {
-  if (!device.admin_token) {
+  // [P1-3] Session-store resolution: a profile without the field still finds
+  // a token the operator entered this session (profile field is deprecated).
+  const adminToken = resolveAdminToken(device);
+  if (!adminToken) {
     return {
       ok: false,
       message:
-        "ADMIN_TOKEN belum diisi — buka Settings, pilih perangkat, isi kolom Admin Token (rahasia operator dari Config sheet GAS).",
+        "ADMIN_TOKEN belum diisi — buka Settings, pilih perangkat, isi kolom Admin Token (rahasia operator dari Config sheet GAS). Token hanya disimpan untuk sesi ini.",
     };
   }
   const payload: Record<string, unknown> = {
     action: "EMERGENCY_COMMAND",
     token: device.auth_token,
-    admin_token: device.admin_token,
+    admin_token: adminToken,
     device_key: device.device_id,
     command,
   };

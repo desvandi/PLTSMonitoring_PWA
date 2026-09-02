@@ -14,6 +14,9 @@
 export const SYS_CONFIG_KEY = 'PLTS_SYS_CONFIG';
 export const SYS_CONFIG_VERSION = '2.0.0';
 
+/** [P1-3 REMEDIATION 2026-09] sessionStorage-backed admin-token store. */
+import { setAdminToken } from './adminTokenSession';
+
 export interface DashboardSettings {
   telemetry_refresh_interval_sec: number;
   battery_nominal_voltage: number;
@@ -150,6 +153,28 @@ export function readSysConfig(): PltsSysConfig | null {
     const parsed = JSON.parse(raw) as unknown;
     const validated = validateSysConfig(parsed);
     if (!validated) return null;
+    // [P1-3 REMEDIATION 2026-09] LEGACY MIGRATION — a payload that still
+    // carries admin_token (pre-hardening) is moved into the session-scoped
+    // store and re-persisted CLEAN, so the disk blob stops leaking the
+    // operator secret. Runs at most once per payload (the write-back below
+    // removes the trigger).
+    let carriedTokens = false;
+    for (const d of validated.devices) {
+      if (d.admin_token && d.admin_token.trim().length > 0) {
+        setAdminToken(d.device_id, d.admin_token);
+        carriedTokens = true;
+      }
+    }
+    if (carriedTokens) {
+      const stripped = validated.devices.map((d) => ({ ...d, admin_token: undefined }));
+      const clean: PltsSysConfig = { ...validated, devices: stripped };
+      try {
+        window.localStorage.setItem(SYS_CONFIG_KEY, JSON.stringify(clean));
+      } catch {
+        /* quota errors — the session-store migration already happened */
+      }
+      return clean;
+    }
     // Persist migrated payload back to disk so v1 legacy blobs get upgraded
     // to v2 in place — no repeat migration on every read.
     const originalVersion = (parsed as { version?: string })?.version;
@@ -166,10 +191,28 @@ export function readSysConfig(): PltsSysConfig | null {
   }
 }
 
-/** Persist a fully-formed config. Prefer the higher-level helpers below. */
+/** Persist a fully-formed config. Prefer the higher-level helpers below.
+ *
+ * [P1-3 REMEDIATION 2026-09] DeviceProfile.admin_token is NEVER written to
+ * localStorage — the operator secret moved to the session-scoped store
+ * (see lib/adminTokenSession.ts). Any value still riding on a profile at
+ * persist time is migrated to the session store, then stripped here.
+ */
 export function persistSysConfig(config: Omit<PltsSysConfig, 'version' | 'updated_at'>): PltsSysConfig {
+  // Migrate + strip: tokens ride the session store, not the disk blob.
+  const devices = config.devices.map((d) => {
+    if (d.admin_token && d.admin_token.trim().length > 0) {
+      setAdminToken(d.device_id, d.admin_token);
+    }
+    return { ...d, admin_token: undefined };
+  });
+  const active = devices.find((d) => d.device_id === config.active_device_id) ?? devices[0];
   const enriched: PltsSysConfig = {
     ...config,
+    devices,
+    gas_webapp_url: active.gas_webapp_url,
+    auth_token: active.auth_token,
+    device_id: active.device_id,
     version: SYS_CONFIG_VERSION,
     updated_at: new Date().toISOString(),
   };

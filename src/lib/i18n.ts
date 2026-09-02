@@ -74,6 +74,8 @@ export type TranslationKey =
   | "emergency.cfg_relayPin"
   | "emergency.cfg_estopPin"
   | "emergency.cfg_estopEnabled"
+  | "emergency.cfg_sensorFailPolicy"
+  | "emergency.cfg_sensorFailPolicy_hint"
   | "emergency.log_title"
   | "emergency.log_empty"
   | "emergency.acs_gen_title"
@@ -510,6 +512,8 @@ const id: Dict = {
   "emergency.cfg_relayPin": "Pin relay (GPIO)",
   "emergency.cfg_estopPin": "Pin sense E-stop",
   "emergency.cfg_estopEnabled": "E-stop aktif (1/0)",
+  "emergency.cfg_sensorFailPolicy": "Kebijakan sensor gagal (1/0)",
+  "emergency.cfg_sensorFailPolicy_hint": "1 = fail-closed (default): sensor arus wajib sehat — sensor hilang → ARM ditolak + sistem RUN ter-trip SENSOR_LOSS. 0 = opt-out operator (hanya untuk bench/komisioning, tidak aman produksi).",
   "emergency.log_title": "Riwayat Kejadian Darurat",
   "emergency.log_empty": "Belum ada kejadian darurat tercatat.",
   "emergency.acs_gen_title": "Arus Jenset → Inverter",
@@ -923,6 +927,8 @@ const en: Dict = {
   "emergency.cfg_relayPin": "Relay pin (GPIO)",
   "emergency.cfg_estopPin": "E-stop sense pin",
   "emergency.cfg_estopEnabled": "E-stop enabled (1/0)",
+  "emergency.cfg_sensorFailPolicy": "Sensor-fail policy (1/0)",
+  "emergency.cfg_sensorFailPolicy_hint": "1 = fail-closed (default): current sensors must be healthy — a lost sensor blocks ARM and trips a running system with SENSOR_LOSS. 0 = operator opt-out (bench/commissioning only, unsafe in production).",
   "emergency.log_title": "Emergency Event History",
   "emergency.log_empty": "No emergency events recorded yet.",
   "emergency.acs_gen_title": "Genset → Inverter Current",

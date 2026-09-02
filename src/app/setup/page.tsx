@@ -18,6 +18,12 @@ import {
   pingGasEndpoint,
   validateSysConfig,
 } from '@/lib/sysConfig';
+// [P1-3 REMEDIATION 2026-09] session-scoped admin-token store (aliased:
+// `setAdminToken` already names the local React state setter).
+import {
+  getAdminToken,
+  setAdminToken as persistAdminTokenSession,
+} from '@/lib/adminTokenSession';
 import { useSysConfig } from '@/components/providers/sys-config-provider';
 import { QrScannerButton } from '@/components/setup/qr-scanner-button';
 
@@ -39,9 +45,13 @@ function SetupPageInner() {
   const [gasUrl, setGasUrl] = useState(source?.gas_webapp_url ?? '');
   const [authToken, setAuthToken] = useState(source?.auth_token ?? '');
   // v1.7.0 [E-WAVE] — operator-only secret (GAS Config sheet ADMIN_TOKEN).
-  // Optional: gates ARM/DISARM/CONFIG emergency commands. Empty → disabled.
+  // [P1-3 REMEDIATION 2026-09] SESSION-SCOPED: initialized from the
+  // sessionStorage-backed store (adminTokenSession.ts), persisted there on
+  // save — NEVER into localStorage PLTS_SYS_CONFIG. New tab / new browser
+  // session honestly re-prompts (fail-closed), shrinking the exposure
+  // window of the fleet-level credential from "forever" to "this session".
   const [adminToken, setAdminToken] = useState(
-    source?.devices.find((d) => d.device_id === source?.active_device_id)?.admin_token ?? ''
+    () => getAdminToken(source?.active_device_id ?? source?.device_id ?? '') ?? ''
   );
   const [deviceId, setDeviceId] = useState(source?.device_id ?? 'PLTS_MONITOR_01');
   const [label, setLabel] = useState(
@@ -129,12 +139,15 @@ function SetupPageInner() {
       theme: DEFAULT_DASHBOARD_SETTINGS.theme,
     };
     if (isAddMode && config) {
+      // [P1-3] token rides the SESSION store — the profile field is left
+      // undefined (persistSysConfig strips it anyway; belt and suspenders).
+      persistAdminTokenSession(deviceId.trim(), adminToken);
       addDevice({
         device_id: deviceId.trim(),
         label: label.trim() || deviceId.trim(),
         gas_webapp_url: gasUrl.trim(),
         auth_token: authToken.trim(),
-        admin_token: adminToken.trim() || undefined,
+        admin_token: undefined,
         dashboard_settings: dashboard,
       });
       toast.success(`Perangkat ${deviceId.trim()} ditambahkan & di-set aktif.`);
@@ -142,16 +155,19 @@ function SetupPageInner() {
       // [AUDIT 2026-08-28 F1] EDIT path — upsert the active device in place.
       // save()/writeSysConfig() would overwrite devices[] with a single entry
       // and silently destroy the rest of the fleet.
+      persistAdminTokenSession(deviceId.trim(), adminToken);
       updateActive({
         device_id: deviceId.trim(),
         label: label.trim() || deviceId.trim(),
         gas_webapp_url: gasUrl.trim(),
         auth_token: authToken.trim(),
-        admin_token: adminToken.trim() || undefined,
+        admin_token: undefined,
         dashboard_settings: dashboard,
       });
       toast.success(`Konfigurasi ${deviceId.trim()} tersimpan (fleet dipertahankan).`);
     } else {
+      // [P1-3] first-run: token also rides the session store.
+      persistAdminTokenSession(deviceId.trim(), adminToken);
       save({
         gas_webapp_url: gasUrl.trim(),
         auth_token: authToken.trim(),
@@ -339,6 +355,11 @@ function SetupPageInner() {
               <p className="text-[11px] text-muted-foreground">
                 Rahasia operator dari Config sheet GAS (ADMIN_TOKEN). Diperlukan untuk perintah
                 ARM / EMERGENCY STOP di menu Kontrol Darurat. Kosong = fitur nonaktif (fail-closed).
+                <span className="block mt-1 text-amber-500/90">
+                  Token hanya disimpan untuk SESI INI (bukan localStorage) — tab baru akan
+                  meminta input ulang. Ini proteksi P1: kredensial operator tidak pernah menetap
+                  di penyimpanan browser permanen.
+                </span>
               </p>
             </div>
             <div className="space-y-1.5">

@@ -44,6 +44,9 @@ import {
   type EmergencyConfig,
   type EmergencyEventEntry,
 } from '@/lib/emergency';
+// [P1-3 REMEDIATION 2026-09] the operator ADMIN_TOKEN lives in the
+// session-scoped store — the persisted profile no longer carries it.
+import { resolveAdminToken } from '@/lib/adminTokenSession';
 import { EnergyFlowDiagram } from './energy-flow-diagram';
 import { cn } from '@/lib/utils';
 
@@ -63,7 +66,14 @@ export function EmergencyControlView() {
   const [showConfig, setShowConfig] = useState(false);
   const [draftConfig, setDraftConfig] = useState<EmergencyConfig>(DEFAULT_EMERGENCY_CONFIG);
 
-  const device = config?.devices.find((d) => d.device_id === config.active_device_id) ?? null;
+  // [P1-3 REMEDIATION 2026-09] admin token resolves from the SESSION store —
+  // a new tab honestly reports "not set" until the operator re-enters it
+  // (fail-closed), instead of silently remembering a permanent secret.
+  const device = useMemo(() => {
+    const base = config?.devices.find((d) => d.device_id === config.active_device_id) ?? null;
+    if (!base) return null;
+    return { ...base, admin_token: resolveAdminToken(base) };
+  }, [config]);
   const status = useMemo(
     () => statuses.find((s) => s.device.device_id === config?.active_device_id) ?? null,
     [statuses, config?.active_device_id],
@@ -298,6 +308,15 @@ export function EmergencyControlView() {
                       setDraftConfig((c) => ({ ...c, [f.key]: v }));
                     }}
                   />
+                  {/* v1.7.0 [P1-SC1] — safety policy needs its own honest hint. */}
+                  {f.key === 'sensorFailPolicy' && (
+                    <p
+                      data-testid="sensor-fail-policy-hint"
+                      className="text-[11px] leading-relaxed text-muted-foreground"
+                    >
+                      {t('emergency.cfg_sensorFailPolicy_hint')}
+                    </p>
+                  )}
                 </div>
               ))}
             </div>

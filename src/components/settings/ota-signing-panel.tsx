@@ -10,6 +10,8 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { hmacSha256Hex, sha256Hex } from '@/lib/sysConfig';
+// [P1-3 REMEDIATION 2026-09] session-scoped admin token prefill.
+import { getAdminToken } from '@/lib/adminTokenSession';
 import { useSysConfig } from '@/components/providers/sys-config-provider';
 
 interface OtaManifest {
@@ -58,7 +60,13 @@ export function OtaSigningPanel() {
   // localStorage: hanya dipegang di memori sesi ini (publish OTA adalah
   // aksi langka; meminta ulang lebih aman daripada menyimpan secret yang
   // mengungguli semua device di fleet).
-  const [adminToken, setAdminToken] = useState('');
+  // [P1-3 REMEDIATION 2026-09] di-inisialisasi dari session store — jika
+  // operator sudah memasukkan token sesi ini di halaman Setup/Kontrol
+  // Darurat, panel OTA terisi otomatis (kualitas hidup) tanpa pernah
+  // menyimpannya permanen di browser.
+  const [adminToken, setAdminToken] = useState(
+    () => getAdminToken(config?.active_device_id ?? config?.device_id ?? '') ?? ''
+  );
 
   const [version, setVersion] = useState('1.0.1');
   const [url, setUrl] = useState('');
