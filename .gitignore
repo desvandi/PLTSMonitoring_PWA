@@ -1,0 +1,29 @@
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# IDE
+.idea/
+.vscode/
+
+# Build (if Next.js added later)
+node_modules/
+.next/
+dist/
+out/
+
+# Env
+.env
+.env.local
+.env.production
+tsconfig.tsbuildinfo
+next-env.d.ts
+public/swe-worker-*.js
+
+# Runtime/mocks
+.data/
+dev.log
+server.log
+3100

@@ -1,0 +1,191 @@
+/* ================================================================
+   MonitorIoT PWA - Stylesheet
+   Dark-first, mobile-first, tanpa framework.
+   ================================================================ */
+
+:root {
+  --bg: #0f172a;
+  --bg-elev: #1e293b;
+  --bg-elev-2: #273549;
+  --text: #e2e8f0;
+  --text-muted: #94a3b8;
+  --accent: #38bdf8;
+  --accent-strong: #0ea5e9;
+  --danger: #f87171;
+  --danger-bg: #451a1a;
+  --warning: #fbbf24;
+  --warning-bg: #453411;
+  --ok: #4ade80;
+  --border: #334155;
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.6;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- Header ---------- */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 20px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding-top: max(14px, env(safe-area-inset-top));
+}
+
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-icon { border-radius: 10px; }
+.brand h1 { font-size: 1.15rem; margin: 0; letter-spacing: 0.3px; }
+.brand-sub { margin: 0; font-size: 0.75rem; color: var(--text-muted); }
+
+.conn { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text-muted); }
+.conn-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--text-muted); }
+.conn-dot--online { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.conn-dot--offline { background: var(--danger); }
+
+/* ---------- Banner ---------- */
+.banner {
+  display: none;
+  padding: 10px 20px;
+  font-size: 0.85rem;
+  background: var(--bg-elev-2);
+  border-bottom: 1px solid var(--border);
+}
+.banner--visible { display: block; }
+.banner--error { background: var(--danger-bg); color: var(--danger); }
+
+/* ---------- Layout ---------- */
+main {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 20px 16px 60px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.section-head h2 { font-size: 1.05rem; margin: 0; }
+.muted { color: var(--text-muted); font-size: 0.78rem; }
+
+/* ---------- Sensor grid ---------- */
+.sensor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px;
+}
+
+.sensor-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.sensor-card h3 { margin: 0 0 6px; font-size: 0.85rem; font-weight: 600; color: var(--text-muted); }
+.sensor-value { margin: 0; font-size: 1.7rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.sensor-status { margin: 6px 0 0; font-size: 0.78rem; color: var(--ok); }
+.sensor-card--alarm { border-color: var(--danger); }
+.sensor-card--alarm .sensor-status { color: var(--danger); font-weight: 700; }
+
+.empty-state { color: var(--text-muted); font-size: 0.9rem; grid-column: 1 / -1; }
+
+/* ---------- Alarm list ---------- */
+.alarm-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.alarm-item {
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  border-left: 4px solid var(--text-muted);
+  font-size: 0.9rem;
+}
+.alarm-item--none { color: var(--text-muted); }
+.alarm-item--critical { border-left-color: var(--danger); background: var(--danger-bg); }
+.alarm-item--warning { border-left-color: var(--warning); background: var(--warning-bg); }
+.alarm-item--info { border-left-color: var(--accent); }
+.alarm-item strong { display: block; }
+
+/* ---------- Push card ---------- */
+.push-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+}
+.push-desc { margin: 0 0 16px; font-size: 0.9rem; color: var(--text-muted); }
+.push-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.btn {
+  appearance: none;
+  border: none;
+  border-radius: 10px;
+  padding: 11px 18px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s ease, opacity 0.15s ease;
+}
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-primary { background: var(--accent-strong); color: #06283a; }
+.btn-primary:not(:disabled):hover { filter: brightness(1.1); }
+.btn-secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+.btn-secondary:not(:disabled):hover { background: var(--bg-elev-2); }
+
+.push-status { margin: 14px 0 0; font-size: 0.85rem; color: var(--ok); min-height: 1.2em; }
+.push-status--error { color: var(--danger); }
+.push-hint { margin: 8px 0 0; font-size: 0.75rem; }
+
+/* ---------- Footer ---------- */
+.app-footer {
+  border-top: 1px solid var(--border);
+  padding: 16px 20px calc(16px + env(safe-area-inset-bottom));
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* ---------- Responsive ---------- */
+@media (max-width: 480px) {
+  .sensor-grid { grid-template-columns: repeat(2, 1fr); }
+  .push-actions .btn { flex: 1 1 100%; }
+}
+
+/* ---------- Aksesibilitas ---------- */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f1f5f9;
+    --bg-elev: #ffffff;
+    --bg-elev-2: #e2e8f0;
+    --text: #0f172a;
+    --text-muted: #475569;
+    --border: #cbd5e1;
+    --danger-bg: #fee2e2;
+    --warning-bg: #fef3c7;
+  }
+  .btn-primary { color: #ffffff; }
+}

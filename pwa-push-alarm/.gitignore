@@ -1,0 +1,15 @@
+# Node / alat uji lokal
+node_modules/
+package.json
+package-lock.json
+
+# Build terpasang (hasil apply-deploy-config.js --out) - memuat URL
+# deployment dan nilai produksi; jangan pernah di-commit.
+build/
+staging/
+out/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log

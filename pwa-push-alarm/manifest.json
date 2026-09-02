@@ -1,0 +1,45 @@
+{
+  "id": "./index.html",
+  "name": "MonitorIoT - Dashboard Alarm Sensor",
+  "short_name": "MonitorIoT",
+  "description": "Dashboard monitoring sensor dengan alarm push Web Push API + VAPID yang tetap berfungsi saat aplikasi tertutup.",
+  "start_url": "./index.html?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "lang": "id",
+  "dir": "ltr",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Lihat Alarm Aktif",
+      "short_name": "Alarm",
+      "description": "Buka daftar alarm yang sedang aktif",
+      "url": "./index.html?section=alarms",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

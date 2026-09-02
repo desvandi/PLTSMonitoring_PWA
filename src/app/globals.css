@@ -1,0 +1,223 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  /* IoT status colors — semantic, never raw color names */
+  --color-status-on: var(--status-on);
+  --color-status-off: var(--status-off);
+  --color-status-warn: var(--status-warn);
+  --color-status-error: var(--status-error);
+  --color-status-info: var(--status-info);
+  --color-status-derived: var(--status-derived);
+  --color-status-estimated: var(--status-estimated);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.625rem;
+  /* Light mode: warm slate with amber accent (solar theme) */
+  --background: oklch(0.985 0.002 60);
+  --foreground: oklch(0.21 0.02 60);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.02 60);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.02 60);
+  --primary: oklch(0.7 0.17 60); /* amber-500 — solar */
+  --primary-foreground: oklch(0.15 0.02 60);
+  --secondary: oklch(0.96 0.004 60);
+  --secondary-foreground: oklch(0.3 0.02 60);
+  --muted: oklch(0.96 0.004 60);
+  --muted-foreground: oklch(0.55 0.02 60);
+  --accent: oklch(0.95 0.04 60);
+  --accent-foreground: oklch(0.3 0.08 60);
+  --destructive: oklch(0.58 0.22 27);
+  --border: oklch(0.92 0.004 60);
+  --input: oklch(0.92 0.004 60);
+  --ring: oklch(0.7 0.17 60);
+  /* IoT status palette (light) */
+  --status-on: oklch(0.62 0.13 162);     /* emerald — measured/valid */
+  --status-off: oklch(0.7 0.005 256);    /* slate — off/idle */
+  --status-warn: oklch(0.75 0.15 75);     /* amber — warning/estimated */
+  --status-error: oklch(0.65 0.22 27);    /* red — error/critical */
+  --status-info: oklch(0.7 0.1 220);     /* sky — info/derived */
+  --status-derived: oklch(0.65 0.13 230); /* sky-blue — derived values */
+  --status-estimated: oklch(0.7 0.15 75); /* amber — estimated values */
+  --chart-1: oklch(0.62 0.13 162);
+  --chart-2: oklch(0.7 0.1 220);
+  --chart-3: oklch(0.75 0.15 75);
+  --chart-4: oklch(0.65 0.22 27);
+  --chart-5: oklch(0.55 0.12 290);
+  --sidebar: oklch(0.97 0.003 60);
+  --sidebar-foreground: oklch(0.21 0.02 60);
+  --sidebar-primary: oklch(0.7 0.17 60);
+  --sidebar-primary-foreground: oklch(0.15 0.02 60);
+  --sidebar-accent: oklch(0.95 0.04 60);
+  --sidebar-accent-foreground: oklch(0.3 0.08 60);
+  --sidebar-border: oklch(0.92 0.004 60);
+  --sidebar-ring: oklch(0.7 0.17 60);
+}
+
+.dark {
+  /* Dark mode: deep slate with amber accent (solar/HASS-like) */
+  --background: oklch(0.18 0.015 256);
+  --foreground: oklch(0.93 0.005 256);
+  --card: oklch(0.22 0.018 256);
+  --card-foreground: oklch(0.93 0.005 256);
+  --popover: oklch(0.22 0.018 256);
+  --popover-foreground: oklch(0.93 0.005 256);
+  --primary: oklch(0.75 0.17 60); /* amber-400 — solar bright */
+  --primary-foreground: oklch(0.15 0.02 256);
+  --secondary: oklch(0.27 0.02 256);
+  --secondary-foreground: oklch(0.93 0.005 256);
+  --muted: oklch(0.27 0.018 256);
+  --muted-foreground: oklch(0.68 0.01 256);
+  --accent: oklch(0.3 0.04 60);
+  --accent-foreground: oklch(0.85 0.1 60);
+  --destructive: oklch(0.7 0.19 22);
+  --border: oklch(1 0 0 / 8%);
+  --input: oklch(1 0 0 / 12%);
+  --ring: oklch(0.75 0.17 60);
+  /* IoT status palette (dark) — bright on dark */
+  --status-on: oklch(0.75 0.18 162);     /* emerald bright */
+  --status-off: oklch(0.55 0.01 256);    /* slate dim */
+  --status-warn: oklch(0.8 0.17 75);     /* amber bright */
+  --status-error: oklch(0.7 0.22 22);    /* red bright */
+  --status-info: oklch(0.75 0.13 220);   /* sky bright */
+  --status-derived: oklch(0.7 0.13 230); /* sky-blue */
+  --status-estimated: oklch(0.8 0.17 75); /* amber */
+  --chart-1: oklch(0.75 0.18 162);
+  --chart-2: oklch(0.75 0.13 220);
+  --chart-3: oklch(0.8 0.17 75);
+  --chart-4: oklch(0.7 0.22 22);
+  --chart-5: oklch(0.7 0.15 290);
+  --sidebar: oklch(0.21 0.018 256);
+  --sidebar-foreground: oklch(0.93 0.005 256);
+  --sidebar-primary: oklch(0.75 0.17 60);
+  --sidebar-primary-foreground: oklch(0.15 0.02 256);
+  --sidebar-accent: oklch(0.3 0.04 60);
+  --sidebar-accent-foreground: oklch(0.85 0.1 60);
+  --sidebar-border: oklch(1 0 0 / 8%);
+  --sidebar-ring: oklch(0.75 0.17 60);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "ss01", "cv01", "cv03";
+  }
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--muted);
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--muted-foreground);
+  }
+  /* Status utility classes */
+  .status-glow-on {
+    box-shadow: 0 0 0 1px var(--status-on), 0 0 12px -2px var(--status-on);
+  }
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 9999px;
+    display: inline-block;
+    flex-shrink: 0;
+  }
+  .status-dot-on { background: var(--status-on); box-shadow: 0 0 6px var(--status-on); }
+  .status-dot-off { background: var(--status-off); }
+  .status-dot-warn { background: var(--status-warn); }
+  .status-dot-error { background: var(--status-error); }
+  .status-dot-info { background: var(--status-info); }
+  .status-dot-derived { background: var(--status-derived); }
+  .status-dot-estimated { background: var(--status-estimated); }
+}
+
+@layer utilities {
+  .animate-pulse-slow {
+    animation: pulse-slow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  @keyframes pulse-slow {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  .animate-status-on {
+    animation: status-glow 2s ease-in-out infinite;
+  }
+  @keyframes status-glow {
+    0%, 100% { box-shadow: 0 0 6px var(--status-on); }
+    50% { box-shadow: 0 0 14px var(--status-on); }
+  }
+  .bg-grid {
+    background-image:
+      linear-gradient(to right, var(--border) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--border) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+}
+
+/* [E-WAVE v1.7.0] Energy-flow animated dashes — speed ∝ power (set inline
+   via animationDuration); direction reverse = battery charging. Respects
+   prefers-reduced-motion (the component also skips rendering the overlay). */
+@layer utilities {
+  .flow-dash {
+    animation-name: flow-dash-move;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+  }
+  @keyframes flow-dash-move {
+    from { stroke-dashoffset: 20; }
+    to { stroke-dashoffset: 0; }
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .flow-dash { animation: none; }
+}

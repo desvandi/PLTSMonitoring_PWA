@@ -1,0 +1,428 @@
+'use client';
+
+// =============================================================================
+// Configuration Center — device + battery + thresholds configuration
+// -----------------------------------------------------------------------------
+// Brief §64:
+//   - Device: name, site, timezone (operator-editable)
+//   - Battery: capacityAh, nominalV, fullV, lowV, idleCurrentThreshold,
+//     fullChargeCurrentThreshold, fullChargePersistenceSec, telemetryIntervalSec
+//   - Alarm thresholds: voltage low/high, current high, temperature, humidity, SOC
+//   - SOC params: syncOnFullCharge, syncOnVoltage, voltageSyncHysteresisV,
+//     baselineAgingPerMonthPct
+//   - Calibration params: autoZeroAcs712OnBoot, sht31HeaterEnabled
+//   - All mutations require CSRF + requestId (handled in api.ts).
+//   - Versioned: every change bumps config.revision + persists via atomic A/B.
+//   - Export/Import: full config JSON (CRC32-protected) for backup/restore.
+// =============================================================================
+
+import { useState } from 'react';
+import { useConfig, useStatus } from '@/hooks/useApi';
+import { api } from '@/lib/api';
+import { useLanguage } from '@/components/providers/language-provider';
+import { useQueryClient } from '@tanstack/react-query';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Settings, Battery, AlertTriangle, FileDown, FileUp, Save } from 'lucide-react';
+import { formatDateTime } from '@/lib/format';
+import { toast } from 'sonner';
+import { deviceConfigOf } from '@/lib/config-shape';
+
+export function ConfigurationCenter() {
+  const { t } = useLanguage();
+  const { data: status } = useStatus();
+  const { data: configData, isLoading } = useConfig();
+  const qc = useQueryClient();
+
+  // Local form state — populated from config when loaded
+  const [deviceName, setDeviceName] = useState('');
+  const [siteName, setSiteName] = useState('');
+  const [timezone, setTimezone] = useState('');
+  const [batteryCapacityAh, setBatteryCapacityAh] = useState('');
+  const [fullVoltage, setFullVoltage] = useState('');
+  const [lowVoltage, setLowVoltage] = useState('');
+  const [idleCurrentThreshold, setIdleCurrentThreshold] = useState('');
+  const [fullChargeCurrentThreshold, setFullChargeCurrentThreshold] = useState('');
+  const [fullChargePersistenceSec, setFullChargePersistenceSec] = useState('');
+  const [telemetryIntervalSec, setTelemetryIntervalSec] = useState('');
+
+  // [AUDIT 2026-08-28 G4] Pola resmi React "adjust state during render":
+  // form disinkronkan dari configData SEKALI per identitas data (bukan via
+  // useEffect). setState sinkron di dalam effect memicu cascading render —
+  // di sini pembaruan terjadi pada render yang sama dengan data baru, tanpa
+  // pass ekstra. Penanda syncedFrom mencegah reset saat re-render biasa
+  // (ketika operator sedang mengetik).
+  const [syncedFrom, setSyncedFrom] = useState<unknown>(configData);
+  if (configData !== syncedFrom) {
+    setSyncedFrom(configData);
+    const c = configData ? deviceConfigOf(configData) : null;
+    setDeviceName(c?.deviceName ?? '');
+    setSiteName(c?.siteName ?? '');
+    // deviceConfigOf sudah flatten: nested SystemConfig.config dilebur
+    // + identitas top-level menang; mode firmware-flat kembali apa adanya.
+    setTimezone(c?.timezone ?? '');
+    setBatteryCapacityAh(String(c?.batteryCapacityAh ?? ''));
+    setFullVoltage(String(c?.fullVoltage ?? ''));
+    setLowVoltage(String(c?.lowVoltage ?? ''));
+    setIdleCurrentThreshold(String(c?.idleCurrentThreshold ?? ''));
+    setFullChargeCurrentThreshold(String(c?.fullChargeCurrentThreshold ?? ''));
+    setFullChargePersistenceSec(String(c?.fullChargePersistenceSec ?? ''));
+    setTelemetryIntervalSec(String(c?.telemetryIntervalSec ?? ''));
+  }
+
+  const saveDevice = async () => {
+    try {
+      await api.updateDevice({ deviceName, siteName, timezone });
+      toast.success('Device settings saved');
+      qc.invalidateQueries({ queryKey: ['config'] });
+      qc.invalidateQueries({ queryKey: ['status'] });
+    } catch (e) {
+      toast.error(`Save failed: ${e instanceof Error ? e.message : 'unknown'}`);
+    }
+  };
+
+  const saveBattery = async () => {
+    const payload: Record<string, number> = {};
+    const f = parseFloat(batteryCapacityAh);
+    if (!Number.isNaN(f)) payload.batteryCapacityAh = f;
+    const fv = parseFloat(fullVoltage);
+    if (!Number.isNaN(fv)) payload.fullVoltage = fv;
+    const lv = parseFloat(lowVoltage);
+    if (!Number.isNaN(lv)) payload.lowVoltage = lv;
+    const i = parseFloat(idleCurrentThreshold);
+    if (!Number.isNaN(i)) payload.idleCurrentThreshold = i;
+    const fc = parseFloat(fullChargeCurrentThreshold);
+    if (!Number.isNaN(fc)) payload.fullChargeCurrentThreshold = fc;
+    const fp = parseInt(fullChargePersistenceSec, 10);
+    if (!Number.isNaN(fp)) payload.fullChargePersistenceSec = fp;
+    const ti = parseInt(telemetryIntervalSec, 10);
+    if (!Number.isNaN(ti)) payload.telemetryIntervalSec = ti;
+    if (Object.keys(payload).length === 0) {
+      toast.error('No values to save');
+      return;
+    }
+    try {
+      await api.updateConfig(payload);
+      toast.success('Battery configuration saved');
+      qc.invalidateQueries({ queryKey: ['config'] });
+      qc.invalidateQueries({ queryKey: ['status'] });
+    } catch (e) {
+      toast.error(`Save failed: ${e instanceof Error ? e.message : 'unknown'}`);
+    }
+  };
+
+  const exportConfig = async () => {
+    try {
+      const r = await api.exportConfig();
+      const blob = new Blob([JSON.stringify(r, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `plts-config-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success('Config exported');
+    } catch (e) {
+      toast.error(`Export failed: ${e instanceof Error ? e.message : 'unknown'}`);
+    }
+  };
+
+  if (isLoading || !configData) {
+    return (
+      <div className="space-y-6">
+        <Skeleton className="h-12 w-64" />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-48 rounded-xl" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const c = deviceConfigOf(configData);
+  const cfg = c;
+  const tz = status?.config.timezone;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+          <Settings className="w-6 h-6 text-primary" />
+          {t('config.title')}
+        </h1>
+        <p className="text-sm text-muted-foreground mt-1">{t('config.subtitle')}</p>
+      </div>
+
+      {/* Metadata strip */}
+      <Card className="border-border/60">
+        <CardContent className="p-3 flex items-center justify-between text-xs flex-wrap gap-2">
+          <div className="flex items-center gap-3">
+            <span className="text-muted-foreground uppercase tracking-wider">
+              {t('config.revision')}:
+            </span>
+            <span className="font-mono font-semibold">r{cfg.revision ?? '?'}</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-muted-foreground uppercase tracking-wider">
+              {t('config.source')}:
+            </span>
+            <Badge variant="outline" className="text-[9px] px-1.5 h-4">
+              {cfg.source ?? 'unknown'}
+            </Badge>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-muted-foreground uppercase tracking-wider">
+              {t('config.checksum')}:
+            </span>
+            <span className="font-mono text-[10px]">
+              {cfg.checksum ? cfg.checksum.slice(0, 12) + '…' : '—'}
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-muted-foreground uppercase tracking-wider">
+              Updated:
+            </span>
+            <span className="font-mono">
+              {cfg.timestamp ? formatDateTime(cfg.timestamp, tz) : '—'}
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Device settings */}
+      <Card className="border-border/60">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Settings className="w-4 h-4 text-primary" />
+            Device
+          </CardTitle>
+          <CardDescription className="text-xs">
+            Operator-facing device identity + timezone.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="space-y-1">
+            <Label className="text-[10px] uppercase tracking-wider">
+              {t('config.device_name')}
+            </Label>
+            <Input value={deviceName} onChange={(e) => setDeviceName(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-[10px] uppercase tracking-wider">
+              {t('config.site_name')}
+            </Label>
+            <Input value={siteName} onChange={(e) => setSiteName(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-[10px] uppercase tracking-wider">
+              {t('config.timezone')}
+            </Label>
+            <Input
+              value={timezone} placeholder="Asia/Jakarta"
+              onChange={(e) => setTimezone(e.target.value)}
+            />
+          </div>
+          <div className="md:col-span-3">
+            <Button size="sm" onClick={saveDevice}>
+              <Save className="w-3 h-3 mr-1" />
+              {t('common.save')}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Battery configuration */}
+      <Card className="border-border/60">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Battery className="w-4 h-4 text-primary" />
+            Battery
+          </CardTitle>
+          <CardDescription className="text-xs">
+            15S LiFePO4 pack — nominal 48V, full 54V, low 45V.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="space-y-1">
+            <Label className="text-[10px] uppercase tracking-wider">
+              {t('config.battery_capacity')} (Ah)
+            </Label>
+            <Input
+              type="number" step="1"
+              value={batteryCapacityAh}
+              onChange={(e) => setBatteryCapacityAh(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-[10px] uppercase tracking-wider">
+              {t('config.full_voltage')} (V)
+            </Label>
+            <Input
+              type="number" step="0.1"
+              value={fullVoltage}
+              onChange={(e) => setFullVoltage(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-[10px] uppercase tracking-wider">
+              {t('config.low_voltage')} (V)
+            </Label>
+            <Input
+              type="number" step="0.1"
+              value={lowVoltage}
+              onChange={(e) => setLowVoltage(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-[10px] uppercase tracking-wider">
+              {t('config.idle_current_threshold')} (A)
+            </Label>
+            <Input
+              type="number" step="0.1"
+              value={idleCurrentThreshold}
+              onChange={(e) => setIdleCurrentThreshold(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-[10px] uppercase tracking-wider">
+              {t('config.full_charge_current_threshold')} (A)
+            </Label>
+            <Input
+              type="number" step="0.1"
+              value={fullChargeCurrentThreshold}
+              onChange={(e) => setFullChargeCurrentThreshold(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-[10px] uppercase tracking-wider">
+              {t('config.full_charge_persistence')} (s)
+            </Label>
+            <Input
+              type="number" step="1"
+              value={fullChargePersistenceSec}
+              onChange={(e) => setFullChargePersistenceSec(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-[10px] uppercase tracking-wider">
+              {t('config.telemetry_interval')} (s)
+            </Label>
+            <Input
+              type="number" step="1" min="1"
+              value={telemetryIntervalSec}
+              onChange={(e) => setTelemetryIntervalSec(e.target.value)}
+            />
+          </div>
+          <div className="md:col-span-4 flex items-center gap-2 mt-2">
+            <Button size="sm" onClick={saveBattery}>
+              <Save className="w-3 h-3 mr-1" />
+              {t('common.save')}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Alarm thresholds — READ-ONLY display (editing via separate API) */}
+      {cfg.alarmThresholds && (
+        <Card className="border-border/60">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-status-warn" />
+              {t('config.alarm_thresholds')}
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Thresholds applied by AnomalyDetector + AlarmRegistry. Edit via MQTT or REST API.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            {[
+              { label: 'Voltage Low Warn', value: cfg.alarmThresholds.voltageLowWarn, unit: 'V' },
+              { label: 'Voltage Low Critical', value: cfg.alarmThresholds.voltageLowCritical, unit: 'V' },
+              { label: 'Voltage High Warn', value: cfg.alarmThresholds.voltageHighWarn, unit: 'V' },
+              { label: 'Voltage High Critical', value: cfg.alarmThresholds.voltageHighCritical, unit: 'V' },
+              { label: 'Current High Warn', value: cfg.alarmThresholds.currentHighWarn, unit: 'A' },
+              { label: 'Current High Critical', value: cfg.alarmThresholds.currentHighCritical, unit: 'A' },
+              { label: 'Temp High Warn', value: cfg.alarmThresholds.temperatureHighWarn, unit: '°C' },
+              { label: 'Temp High Critical', value: cfg.alarmThresholds.temperatureHighCritical, unit: '°C' },
+              { label: 'Humidity High Warn', value: cfg.alarmThresholds.humidityHighWarn, unit: '%' },
+              { label: 'SOC Low Warn', value: cfg.alarmThresholds.socLowWarn, unit: '%' },
+              { label: 'SOC Low Critical', value: cfg.alarmThresholds.socLowCritical, unit: '%' },
+            ].map((row, i) => (
+              <div key={i} className="flex flex-col gap-1">
+                <span className="text-muted-foreground uppercase tracking-wider text-[10px]">
+                  {row.label}
+                </span>
+                <span className="font-mono font-semibold">
+                  {row.value ?? '—'} {row.unit}
+                </span>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* SOC params + Calibration params — read-only */}
+      {cfg.socParams && (
+        <Card className="border-border/60">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Battery className="w-4 h-4 text-primary" />
+              {t('config.soc_params')}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center justify-between text-xs">
+              <span>Sync on full charge</span>
+              <Switch checked={!!cfg.socParams.syncOnFullCharge} disabled />
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span>Sync on voltage</span>
+              <Switch checked={!!cfg.socParams.syncOnVoltage} disabled />
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span>Voltage sync hysteresis</span>
+              <span className="font-mono">
+                {cfg.socParams.voltageSyncHysteresisV?.toFixed(2) ?? '—'} V
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span>Baseline aging per month</span>
+              <span className="font-mono">
+                {cfg.socParams.baselineAgingPerMonthPct?.toFixed(2) ?? '—'} %
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Export / Import */}
+      <Card className="border-border/60">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <FileDown className="w-4 h-4 text-primary" />
+            Export / Import
+          </CardTitle>
+          <CardDescription className="text-xs">
+            Full config JSON (CRC32-protected). Restore to a new device by uploading the file.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={exportConfig}>
+            <FileDown className="w-3 h-3 mr-1" />
+            {t('common.export')}
+          </Button>
+          <Button variant="outline" size="sm" disabled title="Not implemented in this build">
+            <FileUp className="w-3 h-3 mr-1" />
+            {t('common.import')}
+          </Button>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

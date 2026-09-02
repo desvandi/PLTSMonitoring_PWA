@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>MonitorIoT - Dashboard Alarm Sensor</title>
+  <meta name="description" content="Dashboard monitoring sensor dengan alarm push Web Push API + VAPID yang tetap aktif saat aplikasi tertutup.">
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="color-scheme" content="dark light">
+
+  <!-- iOS PWA (Safari/iOS memerlukan pasang ke Layar Utama agar push aktif) -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="MonitorIoT">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+
+  <!-- Ikon favicon -->
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+
+  <!-- CSS -->
+  <link rel="stylesheet" href="css/style.css">
+
+  <!--
+    Content Security Policy:
+    - Semua skrip & gaya dari origin sendiri (tanpa inline script/style).
+    - connect-src mengizinkan GAS Web App + redirect usercontent-nya.
+    Catatan: frame-ancestors/sandbox hanya berlaku lewat header HTTP,
+    bukan meta - jika hosting mendukung header (mis. Firebase Hosting),
+    tambahkan juga: Content-Security-Policy: frame-ancestors 'none'
+  -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://script.google.com https://script.googleusercontent.com; manifest-src 'self'; base-uri 'self'; form-action 'none'">
+</head>
+<body>
+  <!-- ====================== HEADER ====================== -->
+  <header class="app-header">
+    <div class="brand">
+      <img src="icons/icon-192.png" alt="" class="brand-icon" width="40" height="40">
+      <div>
+        <h1>MonitorIoT</h1>
+        <p class="brand-sub">Dashboard Alarm Sensor &middot; PWA</p>
+      </div>
+    </div>
+    <div class="conn" aria-live="polite">
+      <span id="conn-dot" class="conn-dot conn-dot--offline" role="img" aria-label="status koneksi"></span>
+      <span id="conn-label">Memeriksa...</span>
+    </div>
+  </header>
+
+  <div id="banner" class="banner" role="alert" aria-live="assertive"></div>
+
+  <main>
+    <!-- ====================== SENSOR ====================== -->
+    <section aria-labelledby="sensor-heading">
+      <div class="section-head">
+        <h2 id="sensor-heading">Sensor</h2>
+        <span id="last-updated" class="muted"></span>
+      </div>
+      <div id="sensor-grid" class="sensor-grid">
+        <p class="empty-state">Memuat data sensor...</p>
+      </div>
+    </section>
+
+    <!-- ====================== ALARM ====================== -->
+    <section id="section-alarms" aria-labelledby="alarm-heading">
+      <div class="section-head">
+        <h2 id="alarm-heading">Alarm Aktif</h2>
+      </div>
+      <ul id="alarm-list" class="alarm-list" aria-live="polite">
+        <li class="alarm-item alarm-item--none">Memuat...</li>
+      </ul>
+    </section>
+
+    <!-- ====================== PENGATURAN PUSH ====================== -->
+    <section id="section-push" aria-labelledby="push-heading">
+      <div class="section-head">
+        <h2 id="push-heading">Notifikasi Alarm (Push)</h2>
+      </div>
+      <div class="push-card">
+        <p class="push-desc">
+          Aktifkan untuk menerima <strong>alarm saat aplikasi tertutup</strong>.
+          Notifikasi dikirim dari server melalui Web Push API + VAPID, jadi tetap
+          diterima walaupun PWA tidak sedang dibuka.
+        </p>
+        <div class="push-actions">
+          <button id="btn-enable-push" type="button" class="btn btn-primary">
+            Aktifkan Notifikasi Alarm
+          </button>
+          <button id="btn-disable-push" type="button" class="btn btn-secondary" disabled>
+            Nonaktifkan
+          </button>
+        </div>
+        <p id="push-status" class="push-status" role="status" aria-live="polite"></p>
+        <p id="push-hint" class="push-hint muted">
+          Tips iOS: pasang aplikasi ke Layar Utama (Share &rarr; Add to Home Screen),
+          minimal iOS 16.4, agar notifikasi push berfungsi.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <p>MonitorIoT PWA <span id="app-version"></span> &middot; Web Push API + VAPID</p>
+  </footer>
+
+  <!-- Skrip: urutan penting - config -> push-manager -> app -->
+  <script src="js/config.js"></script>
+  <script src="js/push-manager.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
