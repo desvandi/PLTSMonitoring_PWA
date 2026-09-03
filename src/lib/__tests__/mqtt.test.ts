@@ -25,6 +25,7 @@ type Conn = {
 };
 
 const connectCalls: string[] = [];
+const subscribedTopics: string[] = [];
 const activeClients: Conn[] = [];
 
 vi.mock("mqtt", () => ({
@@ -38,7 +39,11 @@ vi.mock("mqtt", () => ({
           handlers.set(ev, cb);
           return c;
         },
-        subscribe: (_t, _o, cb) => {
+        subscribe: (topics, _o, cb) => {
+          // Record the REAL topic strings the client would subscribe to.
+          for (const t of (Array.isArray(topics) ? topics : [topics]) as string[]) {
+            subscribedTopics.push(t);
+          }
           (cb as (e: Error | null, g: unknown[]) => void)(null, [
             { topic: "t", qos: 1 },
             { topic: "t", qos: 1 },
@@ -147,5 +152,90 @@ describe("W7-1: TLS-only broker URL guard (connectMqtt)", () => {
     await expect(m1.connectMqtt("PLTS-AB12CD34")).rejects.toThrow(/TLS/i);
     expect(activeClients).toHaveLength(1);
     expect(activeClients[0]).toBe(first);
+  });
+});
+
+// =============================================================================
+// W11-1: deviceId cross-layer contract (union {6,8} hex).
+// -----------------------------------------------------------------------------
+// AUDIT FINDING (W11-1, Wave 11 MQTT/TLS review): firmware/ modular generates
+// "PLTS-%06X" (6 hex, lower 24-bit eFuse MAC — firmware_v1.ino) while this
+// client demanded exactly 8 hex — stricter than every producer in the fleet,
+// so MQTT realtime could NEVER connect to a real modular device. The contract
+// is now the UNION: PLTS-XXXXXX (6) or PLTS-XXXXXXXX (8).
+//
+// TRUTH RULES under test:
+//   D1  6-hex (real modular firmware form) is ACCEPTED and reaches
+//       mqtt.connect().
+//   D2  8-hex (documented generic form) still accepted (unchanged).
+//   D3  5 / 7 / 9 hex → rejected (boundary check on both sides of the union).
+//   D4  Topic-wildcard characters (+, #, /) can NEVER survive normalization —
+//       the strip + charset regex keeps them out of the topic namespace.
+//   D5  Lowercase input is normalized to uppercase before validation.
+// =============================================================================
+describe("W11-1: deviceId contract — union {6,8} hex", () => {
+  const good = "wss://broker.example.com:8884/mqtt";
+
+  it("D1: 6-hex deviceId (modular firmware form) is accepted", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MQTT_BROKER_URL", good);
+    vi.stubEnv("NODE_ENV", "production");
+    const { connectMqtt } = await importMqtt();
+    await connectMqtt("PLTS-1A2B3C").catch(() => {});
+    expect(connectCalls).toEqual([good]);
+  });
+
+  it("D2: 8-hex deviceId (generic documented form) is still accepted", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MQTT_BROKER_URL", good);
+    vi.stubEnv("NODE_ENV", "production");
+    const { connectMqtt } = await importMqtt();
+    await connectMqtt("PLTS-AB12CD34").catch(() => {});
+    expect(connectCalls).toEqual([good]);
+  });
+
+  it("D3: 5/7/9-hex deviceIds are rejected (union boundaries)", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MQTT_BROKER_URL", good);
+    vi.stubEnv("NODE_ENV", "production");
+    const { connectMqtt } = await importMqtt();
+    for (const bad of ["PLTS-1A2B3", "PLTS-1A2B3C4", "PLTS-1A2B3C4D5"]) {
+      await expect(connectMqtt(bad)).rejects.toThrow(/PLTS-XXXXXX or PLTS-XXXXXXXX/i);
+    }
+    expect(connectCalls).toHaveLength(0);
+  });
+
+  it("D4: wildcard/topic metacharacters never reach a topic", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MQTT_BROKER_URL", good);
+    vi.stubEnv("NODE_ENV", "production");
+    const { connectMqtt, disconnectMqtt, getMqttDeviceId } = await importMqtt();
+    // Reset module state (previous tests left a deviceId behind).
+    disconnectMqtt();
+    subscribedTopics.length = 0;
+    // Case 1 — input whose normalized form is INVALID ("PLTS-1A/+#" strips
+    // to "PLTS-1A", 2 hex): rejected, no connection attempted.
+    await expect(connectMqtt("PLTS-1A/+#")).rejects.toThrow(/PLTS-XXXXXX/i);
+    expect(connectCalls).toHaveLength(0);
+    // Case 2 — input whose normalized form is VALID ("PLTS-1A2B3C/+" strips
+    // to "PLTS-1A2B3C"): the connection goes ahead, and the SECURITY
+    // PROPERTY is that the subscribed topics contain NO MQTT metacharacters
+    // ('+', '#', or a '/' inside the deviceId segment) — the strip +
+    // [A-Z0-9-] charset makes wildcard smuggling into the topic namespace
+    // impossible.
+    await connectMqtt("PLTS-1A2B3C/+").catch(() => {});
+    expect(connectCalls).toEqual([good]);
+    expect(subscribedTopics).toHaveLength(3);
+    for (const t of subscribedTopics) {
+      expect(t).toMatch(/^plts\/PLTS-[A-Z0-9-]+\/(status|log|online)$/);
+      expect(t).not.toMatch(/[+]/);
+      expect(t).not.toMatch(/plts\/.*.*\/.*#|\/\//);
+    }
+    expect(getMqttDeviceId()).toBe("PLTS-1A2B3C");
+  });
+
+  it("D5: lowercase deviceId is normalized to uppercase", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MQTT_BROKER_URL", good);
+    vi.stubEnv("NODE_ENV", "production");
+    const { connectMqtt, disconnectMqtt, getMqttDeviceId } = await importMqtt();
+    disconnectMqtt();   // isolate module state from previous cases
+    await connectMqtt("plts-1a2b3c").catch(() => {});
+    expect(getMqttDeviceId()).toBe("PLTS-1A2B3C");
   });
 });

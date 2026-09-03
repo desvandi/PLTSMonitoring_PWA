@@ -64,8 +64,10 @@ export function LoginForm() {
   const onMqttConnect = async (e: React.FormEvent) => {
     e.preventDefault();
     const id = macInput.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
-    if (!/^PLTS-[A-F0-9]{8}$/.test(id)) {
-      toast.error('Device ID must be format PLTS-AB12CD34 (8 hex chars)');
+    // [W11-1] Exact union contract: 6 hex (firmware/ modular, MAC-derived) or
+    // 8 hex (documented generic form). See src/lib/mqtt.ts.
+    if (!/^PLTS-(?:[A-F0-9]{6}|[A-F0-9]{8})$/.test(id)) {
+      toast.error('Device ID harus PLTS-XXXXXX atau PLTS-XXXXXXXX (6/8 hex, sesuai ID di perangkat)');
       return;
     }
     setMqttLoading(true);
@@ -195,7 +197,7 @@ export function LoginForm() {
               <CardContent className="space-y-3 text-sm text-muted-foreground">
                 <p>
                   To view your ESP32 telemetry, use the <strong>Remote Mode (MQTT)</strong> card below —
-                  enter the Device ID (e.g., PLTS-AB12CD34).
+                  enter the Device ID printed by your device (e.g., PLTS-1A2B3C or PLTS-AB12CD34).
                 </p>
                 <p className="text-xs">To enable LAN mode instead, set one of these in your env vars:</p>
                 <ul className="text-xs space-y-1 pl-4 list-disc">
@@ -261,14 +263,14 @@ export function LoginForm() {
                       type="text"
                       value={macInput}
                       onChange={(e) => setMacInput(e.target.value)}
-                      placeholder="e.g., PLTS-AB12CD34"
+                      placeholder="e.g., PLTS-1A2B3C (6 hex) or PLTS-AB12CD34 (8 hex)"
                       className="font-mono uppercase"
                       required
                       disabled={mqttLoading}
                       maxLength={13}
                     />
                     <p className="text-[11px] text-muted-foreground">
-                      Found in Serial Monitor: <code className="font-mono">PLTS-XXXXXXXX</code>
+                      Found in Serial Monitor: <code className="font-mono">PLTS-XXXXXX</code> (firmware modular, 6 hex) atau <code className="font-mono">PLTS-XXXXXXXX</code> (8 hex)
                     </p>
                   </div>
                   <Button type="submit" className="w-full" disabled={mqttLoading}>

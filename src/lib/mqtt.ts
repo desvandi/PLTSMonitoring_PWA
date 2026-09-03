@@ -158,11 +158,25 @@ export function connectMqtt(deviceId: string): Promise<void> {
       state.client = null;
     }
 
-    // DeviceId format for PLTS: "PLTS-AB12CD34" (8 hex chars)
-    // Normalize to uppercase, strip non-alphanumeric (keep dashes).
+    // [W11-1 REMEDIATION 2026-09] Device ID contract — the firmware/ modular
+    // generates "PLTS-XXXXXX" (6 hex, lower 24-bit eFuse MAC, see
+    // firmware_v1.ino snprintf "PLTS-%06X"); the documented generic form is
+    // "PLTS-XXXXXXXX" (8 hex). The PWA previously demanded 8 hex ONLY —
+    // stricter than every producer in the fleet, so MQTT realtime could
+    // NEVER connect to a real modular device (operator typed the ID printed
+    // by the device and got rejected). The PWA now accepts the EXACT union
+    // {6, 8} (explicit alternation — NOT the {6,8} range, which would also
+    // admit 7 hex and quietly blur the contract): charset stays uppercase
+    // hex, so topic wildcards ('+','#','/') can never enter a topic via the
+    // device ID.
     const normalized = deviceId.toUpperCase().replace(/[^A-Z0-9-]/g, "");
-    if (!/^PLTS-[A-F0-9]{8}$/.test(normalized)) {
-      reject(new Error("Device ID must be format PLTS-AB12CD34 (8 hex chars)"));
+    if (!/^PLTS-(?:[A-F0-9]{6}|[A-F0-9]{8})$/.test(normalized)) {
+      reject(
+        new Error(
+          "Device ID must be format PLTS-XXXXXX or PLTS-XXXXXXXX " +
+            "(6 or 8 hex chars, as printed by the device)",
+        ),
+      );
       return;
     }
     state.deviceId = normalized;

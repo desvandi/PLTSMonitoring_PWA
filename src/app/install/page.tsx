@@ -9,10 +9,18 @@ import { Button } from '@/components/ui/button';
 
 /**
  * ESP Web Tools flashing landing page — §4.5 of technical brief.
- * Loads the ESP Web Tools <esp-web-install-button> web component from the
- * official CDN and points it at /firmware/manifest.json shipped in /public.
+ * Presents the ESP Web Tools <esp-web-install-button> web component and
+ * points it at /firmware/manifest.json shipped in /public.
  * The firmware version badge is read live from that manifest so it can never
  * drift from the actually-shipped binary (audit 2026-08-27, finding F-B4).
+ *
+ * [W11-2 REMEDIATION 2026-09] The web component is now SELF-HOSTED from
+ * /vendor/esp-web-tools/10.4.0/ (verbatim dist/web of the npm tarball —
+ * provenance + sha256 in PROVENANCE.md). It was previously loaded from
+ * unpkg.com with a floating major (@10), no SRI, and dynamic imports that
+ * fell back to the CDN — a supply-chain hole one WebSerial permission away
+ * from flashing arbitrary firmware. Loading first-party bytes keeps the
+ * whole import chain under CSP script-src 'self'.
  */
 export default function InstallPage() {
   const buttonHostRef = useRef<HTMLDivElement | null>(null);
@@ -23,7 +31,9 @@ export default function InstallPage() {
     if (existing) return;
     const script = document.createElement('script');
     script.type = 'module';
-    script.src = 'https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module';
+    // Pinned, self-hosted, integrity-guaranteed by same-origin + CSP 'self'.
+    // Upgrade = new versioned directory + update this path (see PROVENANCE.md).
+    script.src = '/vendor/esp-web-tools/10.4.0/install-button.js';
     script.setAttribute('data-plts-esp-web-tools', 'true');
     document.head.appendChild(script);
   }, []);

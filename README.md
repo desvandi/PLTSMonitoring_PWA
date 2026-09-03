@@ -198,7 +198,7 @@ Salin `.env.example` → `.env.local` (dev) atau dashboard host (produksi).
 | :--- | :--- | :--- |
 | `NEXT_PUBLIC_API_BASE_URL` | — | Base URL REST ESP32 (LAN/tunnel). Kosong = mode MQTT-only |
 | `NEXT_PUBLIC_MQTT_BROKER_URL` | — | `wss://broker:8884/mqtt` untuk realtime produksi — **wss:// wajib** (guard W7-1 menolak `ws://` di produksi; `ws://` hanya `NODE_ENV=development`) |
-| `NEXT_PUBLIC_MQTT_USERNAME` / `NEXT_PUBLIC_MQTT_PASSWORD` | — | Kredensial broker (terpisah dari ESP32 — isolasi blast-radius) |
+| `NEXT_PUBLIC_MQTT_USERNAME` / `NEXT_PUBLIC_MQTT_PASSWORD` | — | Kredensial broker viewer (terpisah dari ESP32 — isolasi blast-radius). **W11-5:** variabel `NEXT_PUBLIC_*` di-inline ke bundle klien saat build → anggap **publik by construction**; ACL broker wajib read-only `plts/<deviceId>/#`, jangan pernah pakai kredensial device/write-enabled |
 | `JWT_SECRET` | hanya mode LAN | Minimal 32 karakter; tanpa ini login LAN = 403 fail-closed |
 | `NEXT_PUBLIC_PUSH_API_BASE` | — | Default build-time URL GAS PushService (opsional; isian Settings menimpa) |
 | `NEXT_PUBLIC_PUSH_VAPID_PUBLIC_KEY` | — | Default build-time kunci publik VAPID (opsional; isian Settings menimpa) |
@@ -475,6 +475,17 @@ deferral macrotask, deps presisi. Aturan `react-hooks/*` tetap `error`;
   sinkron binari firmware-generic v1.7.0 via skrip rilis resmi; guard
   TLS-only MQTT W7-1 (`connectMqtt()` menolak selain `wss://` di produksi,
   `ws://` hanya dev — 6 uji baru `mqtt.test.ts`; suite 123/123).
+  2026-09-03 — **wave 11 (audit MQTT/TLS menyeluruh)**: W11-1 kontrak
+  deviceId lintas-lapis — PWA kini menerima `PLTS-XXXXXX` (6 hex,
+  bentuk nyata firmware modular dari eFuse MAC) **atau** `PLTS-XXXXXXXX`
+  (8 hex, bentuk generik terdokumentasi); sebelumnya regex 8-hex membuat
+  mode realtime MQTT mustahil tersambung ke perangkat nyata (5 uji baru
+  `mqtt.test.ts`). W11-2 esp-web-tools self-host di
+  `public/vendor/esp-web-tools/10.4.0/` (provenance + sha256 di
+  PROVENANCE.md; sebelumnya unpkg.com floating `@10` tanpa SRI + dynamic
+  import balik ke CDN = lubang rantai pasokan WebSerial) + `unpkg.com`
+  dihapus dari CSP. W11-3 header HSTS ditambahkan; W11-4 CSP `connect-src`
+  buang `ws:` (hanya `wss:`) + `serial=(self)` di Permissions-Policy.
 
 ## 13. Panduan Wiring (ringkas)
 
@@ -496,12 +507,14 @@ ACS712 di fasa L saja → GPIO 35 · RS485 (MAX3485) TX 16/RX 17/DE 4 · CAN
 | Login LAN 403 di produksi | `JWT_SECRET` kosong / mock auth fail-closed | Perilaku benar — mode GAS Cloud viewer aktif bila profil GAS tersimpan; untuk mutasi set `NEXT_PUBLIC_API_BASE_URL` + login operator |
 | Data realtime tidak muncul | Broker MQTT tidak di-set / ESP32 offline | Cek `NEXT_PUBLIC_MQTT_BROKER_URL` + koneksi device |
 | MQTT menolak koneksi dengan error skema | Guard W7-1: `ws://` ditolak di produksi (hanya `wss://`) | Ganti URL broker ke `wss://...` (mis. port TLS 8884); `ws://` hanya untuk `NODE_ENV=development` |
+| MQTT menolak Device ID "PLTS-1A2B3C" | W11-1: kini DITERIMA (6 hex = bentuk firmware modular; 8 hex generik juga) | Masukkan persis ID yang dicetak perangkat di Serial Monitor; 5/7/9 hex tetap ditolak |
 | Push alarm tidak masuk saat aplikasi ditutup | Izin notifikasi mati / langganan dari aplikasi lain | Cek izin OS+browser; pastikan subscribe dari SATU aplikasi (Bab 2.3 panduan) |
 | Notifikasi alarm dobel | Berlangganan dari Next.js DAN PWA standalone | Berhenti berlangganan dari salah satu |
 | Badge SOC "Unknown Source" | Firmware < v1.6.0 (memang jujur) | Upgrade firmware; badge merah bukan bug |
 | Fleet semua nilai "—" padahal online | device_key di profil ≠ device_key telemetri | Samakan Device Key di `/setup`; cek baris Telemetry di Sheet |
 | Fleet 404 untuk device ke-2 dst | device_key tidak terdaftar di tab `Devices` GAS | Tambahkan baris device di sheet `Devices` |
 | Tombol `/install` mati | Browser tanpa Web Serial (iOS/Android/Firefox) | Gunakan Chrome/Edge **desktop** |
+| `/install` memuat komponen dari CDN? | Tidak — W11-2: self-host `/vendor/esp-web-tools/10.4.0/` (pinned, immutable cache) | Perilaku benar; upgrade via prosedur PROVENANCE.md |
 | Versi firmware di `/install` "tidak diketahui" | `public/firmware/manifest.json` tak terbaca | Pastikan file ada & valid (label fail-closed) |
 | Service worker stale saat dev | Cache Serwist lama | `SERWIST_DEV=true npm run dev` + hard reload |
 

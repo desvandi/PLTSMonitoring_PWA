@@ -410,7 +410,7 @@ export interface Diagnostics {
 export interface SystemStatus {
   protocolVersion: number;                     // 1
   firmwareVersion: string;
-  deviceId: string;                            // e.g., 'PLTS-AB12CD34'
+  deviceId: string;                            // 'PLTS-XXXXXX' (modular, 6 hex) | 'PLTS-XXXXXXXX' (8 hex)
   deviceName: string;
   sequence: number;                            // monotonic — for gap detection
   timestamp: number;                           // ms epoch
