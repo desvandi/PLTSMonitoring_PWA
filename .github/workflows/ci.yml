@@ -1,0 +1,124 @@
+name: ci
+
+# ============================================================================
+# P1-1 AUDIT 2026-09 — PWA CI workflow (was entirely missing).
+# Every push/PR to main MUST pass: lint + typecheck + test + build.
+# Cross-repo contract check (firmware schema vs PWA types) runs as a
+# separate job so a schema drift fails the gate even if local PWA tests pass.
+# ============================================================================
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: ESLint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run lint
+
+  typecheck:
+    name: TypeScript typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run typecheck
+
+  test:
+    name: Vitest unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm test
+
+  build:
+    name: Next.js production build
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Build (no env vars -> static export demo)
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_BASE_URL: ''
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pwa-build
+          path: .next/
+          if-no-files-found: warn
+
+  # --------------------------------------------------------------------------
+  # P0-6 / P1-1 — Cross-repo contract check: the PWA's firmware manifest
+  # must match the firmware repo's canonical manifest. The firmware repo's
+  # manifest lives at firmware-generic/manifest.json (committed source);
+  # the PWA's mirror lives at public/firmware/manifest.json (synced by
+  # release_firmware_generic.py). If their `version` or `builds[].parts`
+  # drift, OTA from PWA flashes the wrong binary.
+  # --------------------------------------------------------------------------
+  cross-repo-contract:
+    name: Cross-repo firmware manifest sync
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: pwa
+      - uses: actions/checkout@v4
+        with:
+          repository: desvandi/PLTSMonitoring_Firmware-Backend
+          path: firmware
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+
+      - name: Compare manifests
+        run: |
+          set -e
+          python3 - <<'PY'
+          import json, sys
+          pwa = json.load(open('pwa/public/firmware/manifest.json'))
+          fw  = json.load(open('firmware/firmware-generic/manifest.json'))
+          if pwa.get('version') != fw.get('version'):
+              print(f"FAIL: PWA manifest version {pwa.get('version')!r} "
+                    f"!= firmware manifest version {fw.get('version')!r}")
+              sys.exit(1)
+          # PWA builds use no 'bin/' prefix (files are siblings of manifest);
+          # firmware repo builds use 'bin/' prefix. Normalize and compare.
+          def norm(parts):
+              return sorted((p['path'].split('/')[-1], p['offset']) for p in parts)
+          pwa_parts  = norm(pwa['builds'][0]['parts'])
+          fw_parts   = norm(fw['builds'][0]['parts'])
+          if pwa_parts != fw_parts:
+              print(f"FAIL: parts mismatch\n PWA: {pwa_parts}\n FW: {fw_parts}")
+              sys.exit(1)
+          print(f"PASS: manifests in sync — v{pwa['version']}, {len(pwa_parts)} parts")
+          PY

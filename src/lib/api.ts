@@ -1,15 +1,17 @@
 // =============================================================================
-// API Client — calls ESP32 firmware v1.0 REST API contract (LAN mode).
-// -----------------------------------------------------------------------------
-// In production: NEXT_PUBLIC_API_BASE_URL points to the Cloudflare Tunnel URL
-//   (e.g., https://plts.example.com) which routes to the ESP32.
-// In demo/mock mode: BASE_URL is empty so all calls go to the relative
-//   /api/* Next.js route handlers in this project.
+// API Client — backward-compatible façade over DeviceApiClient + BackendApiClient.
+// [P1-2 AUDIT 2026-09] This file is preserved for backward compatibility with
+// existing imports. New code SHOULD import from "@/lib/deviceApi" or
+// "@/lib/backendApi" directly so the API authority (device vs. backend) is
+// visible at the call site.
 //
-// MONITORING-ONLY — no relay/PIR/schedule mutations. Only:
-//   - Read methods (status, config, calibration, logs, alarms, events, diagnostics, version)
-//   - Configuration mutations (config, calibration, voltage 3-point, ACS712 zero)
-//   - System mutations (ack alarm, reboot, factory reset, OTA)
+// Authoritative split:
+//   - DeviceApi  (@/lib/deviceApi)  : primitives owned by the ESP32 device
+//   - BackendApi (@/lib/backendApi) : aggregations owned by GAS/Next.js
+//
+// The façade below composes both. The split makes it impossible to
+// accidentally call /api/reports on a direct-to-ESP32 connection (which
+// would 404 — reports are server-side aggregations, not device primitives).
 // =============================================================================
 
 import type {
@@ -29,49 +31,89 @@ import type {
   ReportRequest,
   OtaHistoryEntry,
 } from "@/lib/types";
-import { getCompatibilitySnapshot, IncompatibleFirmwareError } from "./compatibility";
 
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
+// Re-export shared symbols so existing imports keep working.
+export { API_BASE_URL, ApiError, setCsrfToken, getCsrfToken, generateRequestId } from "./apiShared";
+import { API_BASE_URL, setCsrfToken, getCsrfToken, generateRequestId } from "./apiShared";
+export { deviceApi } from "./deviceApi";
+export { backendApi } from "./backendApi";
+import { deviceApi } from "./deviceApi";
+import { backendApi } from "./backendApi";
 
-export class ApiError extends Error {
-  status: number;
-  constructor(message: string, status: number) {
-    super(message);
-    this.status = status;
-    this.name = "ApiError";
-  }
-}
-
-// CSRF token cache (per session)
-let csrfTokenCache: string | null = null;
-
-export function setCsrfToken(token: string | null) {
-  csrfTokenCache = token;
-}
-
-export function getCsrfToken(): string | null {
-  return csrfTokenCache;
-}
+// Re-export client interfaces for type-only consumers.
+export type { DeviceApiClient } from "./deviceApi";
+export type { BackendApiClient } from "./backendApi";
 
 /**
- * Generate a requestId for REST mutations.
- * Uses crypto.randomUUID() — CSPRNG. Firmware validateRequestId() accepts
- * 1-64 chars of [a-zA-Z0-9-_]; UUID v4 (36 chars, hex+hyphens) is valid.
+ * @deprecated since P1-2 (2026-09). Use `deviceApi` or `backendApi` directly.
+ *
+ * The combined `api` object is kept only so existing imports keep working.
+ * New code MUST pick the appropriate client — mixing device + backend calls
+ * through one object is exactly the ambiguity the audit flagged.
  */
-function generateRequestId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  // Fallback for older runtimes — still CSPRNG-based.
-  const arr = new Uint8Array(16);
-  crypto.getRandomValues(arr);
-  arr[6] = (arr[6]! & 0x0f) | 0x40;
-  arr[8] = (arr[8]! & 0x3f) | 0x80;
-  const hex = Array.from(arr, (b) => b.toString(16).padStart(2, "0")).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
+export const api = {
+  // ---------- Auth (lives on BOTH device and backend — same cookie session) ----------
+  login: (username: string, password: string) =>
+    deviceRequest<{ token: string; csrfToken: string; expiresAt: number; username: string }>(
+      "/api/login",
+      { method: "POST", body: { username, password }, skipCsrf: true },
+    ),
+  logout: () => deviceRequest<{ success: boolean }>("/api/logout", { method: "POST" }),
+  session: () =>
+    deviceRequest<{ isAuthenticated: boolean; username: string | null; expiresAt: number | null }>(
+      "/api/session",
+    ),
 
-async function request<T>(
+  // ---------- Status & version (device) ----------
+  status:      () => deviceApi.status(),
+  version:     () => deviceApi.version(),
+  diagnostics: () => deviceApi.diagnostics(),
+
+  // ---------- Config & calibration (device) ----------
+  config:      () => deviceApi.config(),
+  calibration: () => deviceApi.calibration(),
+  updateConfig:           (cfg: Partial<DeviceConfig>)  => deviceApi.updateConfig(cfg),
+  updateCalibration:      (cal: Partial<Calibration>)   => deviceApi.updateCalibration(cal),
+  voltageCalibrationPoint: deviceApi.voltageCalibrationPoint,
+  acs712ZeroCal:          () => deviceApi.acs712ZeroCal(),
+
+  // ---------- Logs (device) ----------
+  logs: deviceApi.logs,
+
+  // ---------- Alarms (device) ----------
+  alarms:            () => deviceApi.alarms(),
+  acknowledgeAlarm:  deviceApi.acknowledgeAlarm,
+
+  // ---------- Events (device) ----------
+  events: deviceApi.events,
+
+  // ---------- Reports (BACKEND — P1-4) ----------
+  reports: (req: ReportRequest) => backendApi.reports(req),
+
+  // ---------- AI insights (device — through ESP32 HMAC proxy) ----------
+  insights: () => deviceApi.insights(),
+
+  // ---------- OTA (device + backend split) ----------
+  otaHistory: () => backendApi.otaHistory(),
+  otaCheck:   () => backendApi.otaCheck(),
+  otaUpload:  deviceApi.otaUpload,
+
+  // ---------- System (device) ----------
+  reboot:              () => deviceApi.reboot(),
+  factoryResetPrepare: () => deviceApi.factoryResetPrepare(),
+  factoryResetConfirm: deviceApi.factoryResetConfirm,
+
+  // ---------- Device config ----------
+  updateDevice:   deviceApi.updateDevice,
+  changePassword: deviceApi.changePassword,
+  exportConfig:   () => deviceApi.exportConfig(),
+  importConfig:   (cfg: SystemConfig) => deviceApi.importConfig(cfg),
+};
+
+// Local helper — same as deviceApi's internal one, kept for the auth routes
+// above (login/logout/session are on the device too, but were not moved to
+// deviceApi because they sit at the boundary of where the session is set).
+async function deviceRequest<T>(
   path: string,
   opts: {
     method?: "GET" | "POST" | "PUT" | "DELETE";
@@ -81,14 +123,13 @@ async function request<T>(
   } = {},
 ): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-  };
+  const headers: Record<string, string> = { Accept: "application/json" };
   if (opts.body !== undefined && !(opts.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
   }
-  if (!opts.skipCsrf && opts.method && opts.method !== "GET" && csrfTokenCache) {
-    headers["X-CSRF-Token"] = csrfTokenCache;
+  if (!opts.skipCsrf && opts.method && opts.method !== "GET") {
+    const csrf = getCsrfToken();
+    if (csrf) headers["X-CSRF-Token"] = csrf;
   }
 
   let res: Response;
@@ -107,183 +148,29 @@ async function request<T>(
       cache: "no-store",
     });
   } catch (err) {
+    const { ApiError } = await import("./apiShared");
     throw new ApiError(
       err instanceof Error ? `Network error: ${err.message}` : "Network error",
       0,
     );
   }
 
-  // Handle 204 No Content (no body to parse)
-  if (res.status === 204) {
-    return undefined as T;
-  }
-
+  if (res.status === 204) return undefined as T;
   let json: ApiResponse<T> | null = null;
   try {
     json = (await res.json()) as ApiResponse<T>;
   } catch {
+    const { ApiError } = await import("./apiShared");
     throw new ApiError(`Invalid JSON response (status ${res.status})`, res.status);
   }
-
   if (!res.ok || !json.success) {
+    const { ApiError } = await import("./apiShared");
     const msg = json?.message || `Request failed (${res.status})`;
     throw new ApiError(msg, res.status);
   }
   return json.data;
 }
 
-export const api = {
-  // ---------- Auth ----------
-  login: (username: string, password: string) =>
-    request<{ token: string; csrfToken: string; expiresAt: number; username: string }>(
-      "/api/login",
-      { method: "POST", body: { username, password }, skipCsrf: true },
-    ),
-  logout: () => request<{ success: boolean }>("/api/logout", { method: "POST" }),
-  session: () =>
-    request<{ isAuthenticated: boolean; username: string | null; expiresAt: number | null }>(
-      "/api/session",
-    ),
-
-  // ---------- Status & version ----------
-  status: () => request<SystemStatus>("/api/status"),
-  version: () => request<FirmwareInfo>("/api/version"),
-  diagnostics: () => request<Diagnostics>("/api/diagnostics"),
-
-  // ---------- Config & calibration ----------
-  config: () => request<SystemConfig>("/api/config"),
-  calibration: () => request<Calibration>("/api/calibration"),
-
-  // Mutations — all REST mutations send requestId for transaction journal (firmware C2-C5)
-  updateConfig: (cfg: Partial<DeviceConfig>) => {
-    const compat = getCompatibilitySnapshot();
-    if (compat && !compat.canViewTelemetry) throw new IncompatibleFirmwareError(compat.message);
-    return request<{ updated: boolean }>("/api/config", {
-      method: "POST",
-      body: { ...cfg, requestId: generateRequestId() },
-    });
-  },
-  updateCalibration: (cal: Partial<Calibration>) => {
-    const compat = getCompatibilitySnapshot();
-    if (compat && !compat.canViewTelemetry) throw new IncompatibleFirmwareError(compat.message);
-    return request<{ updated: boolean }>("/api/calibration", {
-      method: "POST",
-      body: { ...cal, requestId: generateRequestId() },
-    });
-  },
-  voltageCalibrationPoint: (
-    point: "low" | "nominal" | "full",
-    reference: number,
-    raw: number,
-  ) => {
-    const compat = getCompatibilitySnapshot();
-    if (compat && !compat.canViewTelemetry) throw new IncompatibleFirmwareError(compat.message);
-    return request<{ updated: boolean }>(`/api/calibration/voltage/point/${point}`, {
-      method: "POST",
-      body: { reference, raw, requestId: generateRequestId() },
-    });
-  },
-  acs712ZeroCal: () => {
-    const compat = getCompatibilitySnapshot();
-    if (compat && !compat.canViewTelemetry) throw new IncompatibleFirmwareError(compat.message);
-    return request<{ updated: boolean; newOffset: number }>(
-      "/api/calibration/acs712/zero",
-      { method: "POST", body: { requestId: generateRequestId() } },
-    );
-  },
-
-  // ---------- Logs ----------
-  logs: (filter?: { type?: LogType | "all"; limit?: number; since?: number }) => {
-    const params = new URLSearchParams();
-    if (filter?.type && filter.type !== "all") params.set("type", filter.type);
-    if (filter?.limit) params.set("limit", String(filter.limit));
-    if (filter?.since) params.set("since", String(filter.since));
-    const q = params.toString();
-    return request<{ logs: ActivityLog[]; total: number }>(`/api/log${q ? `?${q}` : ""}`);
-  },
-
-  // ---------- Alarms ----------
-  alarms: () => request<{ active: Alarm[]; history: Alarm[] }>("/api/alarms"),
-  acknowledgeAlarm: (alarmId: string) =>
-    request<{ acknowledged: boolean }>(`/api/alarms/${alarmId}/acknowledge`, {
-      method: "POST",
-      body: { requestId: generateRequestId() },
-    }),
-
-  // ---------- Events ----------
-  events: (filter?: { from?: number; to?: number; limit?: number }) => {
-    const params = new URLSearchParams();
-    if (filter?.from) params.set("from", String(filter.from));
-    if (filter?.to) params.set("to", String(filter.to));
-    if (filter?.limit) params.set("limit", String(filter.limit));
-    const q = params.toString();
-    return request<{ events: SystemEvent[]; total: number }>(`/api/events${q ? `?${q}` : ""}`);
-  },
-
-  // ---------- Reports ----------
-  reports: (req: ReportRequest) =>
-    request<{ records: DailyEnergyRecord[]; generatedAt: number }>("/api/reports", {
-      method: "POST",
-      body: { ...req, requestId: generateRequestId() },
-    }),
-
-  // ---------- AI insights (advisory only — through ESP32 HMAC proxy) ----------
-  insights: () => request<InsightsEnvelope>("/api/insights"),
-
-  // ---------- OTA ----------
-  otaHistory: () => request<{ entries: OtaHistoryEntry[] }>("/api/ota/history"),
-  otaCheck: () =>
-    request<{ available: boolean; latestVersion: string | null }>("/api/ota/check", {
-      method: "POST",
-    }),
-  otaUpload: (file: File, onProgress?: (pct: number) => void) =>
-    new Promise<{ success: boolean; newVersion?: string }>((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", `${API_BASE_URL}/api/ota`);
-      xhr.withCredentials = true;
-      if (csrfTokenCache) xhr.setRequestHeader("X-CSRF-Token", csrfTokenCache);
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable && onProgress) {
-          onProgress(Math.round((e.loaded / e.total) * 100));
-        }
-      };
-      xhr.onload = () => {
-        try {
-          const json = JSON.parse(xhr.responseText) as ApiResponse<{ success: boolean; newVersion?: string }>;
-          if (xhr.status >= 200 && xhr.status < 300 && json.success) resolve(json.data);
-          else reject(new ApiError(json.message || "OTA failed", xhr.status));
-        } catch {
-          reject(new ApiError("Invalid OTA response", xhr.status));
-        }
-      };
-      xhr.onerror = () => reject(new ApiError("OTA network error", 0));
-      const fd = new FormData();
-      fd.append("file", file);
-      xhr.send(fd);
-    }),
-
-  // ---------- System ----------
-  reboot: () => request<{ rebooting: boolean }>("/api/reboot", { method: "POST" }),
-  factoryResetPrepare: () =>
-    request<{ token: string; expiresAt: number }>("/api/factory_reset/prepare", {
-      method: "POST",
-    }),
-  factoryResetConfirm: (token: string) =>
-    request<{ reset: boolean }>("/api/factory_reset/confirm", {
-      method: "POST",
-      body: { token, confirm: "RESET" },
-    }),
-
-  // ---------- Device config ----------
-  updateDevice: (opts: { deviceName?: string; siteName?: string; timezone?: string }) =>
-    request<{ updated: boolean }>("/api/config/device", { method: "POST", body: opts }),
-
-  changePassword: (current: string, next: string) =>
-    request<{ changed: boolean }>("/api/config/password", {
-      method: "POST",
-      body: { current, next },
-    }),
-  exportConfig: () => request<{ config: SystemConfig }>("/api/config/export"),
-  importConfig: (cfg: SystemConfig) =>
-    request<{ imported: boolean }>("/api/config/import", { method: "POST", body: cfg }),
-};
+// silence unused-import warning for symbols re-exported above
+void setCsrfToken;
+void generateRequestId;

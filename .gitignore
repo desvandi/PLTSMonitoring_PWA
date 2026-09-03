@@ -22,6 +22,21 @@ tsconfig.tsbuildinfo
 next-env.d.ts
 public/swe-worker-*.js
 
+# [P0-6 AUDIT 2026-09] Firmware binaries are NOT source — they are immutable
+# build artifacts owned by the Firmware-Backend repo. The PWA must NOT track
+# its own binary copy (audit-7: a 144-byte drift existed between the PWA's
+# committed v1.7.1 and the firmware repo's v1.7.1). The release_firmware_
+# generic.py script (in the firmware repo) syncs verified-SHA binaries into
+# public/firmware/ at release time. The manifest.json IS tracked (small,
+# text) but binary payloads are gitignored and pulled on-demand.
+public/firmware/*.bin
+public/firmware/*.bin.sha256
+public/firmware/*.bin.sig
+public/firmware/*.bin.ota.json
+public/firmware/SHA256SUMS
+public/firmware/release.json
+public/firmware/provenance.json
+
 # Runtime/mocks
 .data/
 dev.log

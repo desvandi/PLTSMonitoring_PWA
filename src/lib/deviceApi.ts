@@ -1,0 +1,254 @@
+// =============================================================================
+// DeviceApiClient — calls ESP32 firmware REST API directly (LAN mode).
+// [P1-2 AUDIT 2026-09] Split from src/lib/api.ts to enforce clear authority:
+//   - DeviceApi  = primitives owned by the ESP32 device itself
+//                  (status, version, config, calibration, alarms, events,
+//                   logs, diagnostics, reboot, factory_reset, OTA upload)
+//   - BackendApi = aggregations / cross-device data owned by GAS/Next.js
+//                  (telemetry, history, daily, reports, OTA manifest/log)
+// A call to /api/reports on a DeviceApiClient is a CONTRACT VIOLATION —
+// reports are aggregated server-side from many devices, never a primitive
+// of a single ESP32.
+// =============================================================================
+
+import type {
+  ApiResponse,
+  SystemStatus,
+  SystemConfig,
+  FirmwareInfo,
+  ActivityLog,
+  LogType,
+  Alarm,
+  SystemEvent,
+  Diagnostics,
+  Calibration,
+  DeviceConfig,
+  InsightsEnvelope,
+} from "@/lib/types";
+import { getCompatibilitySnapshot, IncompatibleFirmwareError } from "./compatibility";
+import { API_BASE_URL, ApiError, getCsrfToken, generateRequestId } from "./apiShared";
+
+export interface DeviceApiClient {
+  // ---------- Status & version ----------
+  status: () => Promise<SystemStatus>;
+  version: () => Promise<FirmwareInfo>;
+  diagnostics: () => Promise<Diagnostics>;
+
+  // ---------- Config & calibration ----------
+  config: () => Promise<SystemConfig>;
+  calibration: () => Promise<Calibration>;
+  updateConfig: (cfg: Partial<DeviceConfig>) => Promise<{ updated: boolean }>;
+  updateCalibration: (cal: Partial<Calibration>) => Promise<{ updated: boolean }>;
+  voltageCalibrationPoint: (
+    point: "low" | "nominal" | "full",
+    reference: number,
+    raw: number,
+  ) => Promise<{ updated: boolean }>;
+  acs712ZeroCal: () => Promise<{ updated: boolean; newOffset: number }>;
+
+  // ---------- Logs ----------
+  logs: (filter?: { type?: LogType | "all"; limit?: number; since?: number }) =>
+    Promise<{ logs: ActivityLog[]; total: number }>;
+
+  // ---------- Alarms (canonical: POST /api/alarms/{alarmId}/acknowledge) ----------
+  alarms: () => Promise<{ active: Alarm[]; history: Alarm[] }>;
+  acknowledgeAlarm: (alarmId: string) => Promise<{ acknowledged: boolean }>;
+
+  // ---------- Events ----------
+  events: (filter?: { from?: number; to?: number; limit?: number }) =>
+    Promise<{ events: SystemEvent[]; total: number }>;
+
+  // ---------- AI insights (advisory only — through ESP32 HMAC proxy) ----------
+  insights: () => Promise<InsightsEnvelope>;
+
+  // ---------- OTA — directly to ESP32 ----------
+  otaUpload: (file: File, onProgress?: (pct: number) => void) =>
+    Promise<{ success: boolean; newVersion?: string }>;
+
+  // ---------- System ----------
+  reboot: () => Promise<{ rebooting: boolean }>;
+  factoryResetPrepare: () => Promise<{ token: string; expiresAt: number }>;
+  factoryResetConfirm: (token: string) => Promise<{ reset: boolean }>;
+
+  // ---------- Device config (on-device metadata) ----------
+  updateDevice: (opts: { deviceName?: string; siteName?: string; timezone?: string }) =>
+    Promise<{ updated: boolean }>;
+  changePassword: (current: string, next: string) => Promise<{ changed: boolean }>;
+  exportConfig: () => Promise<{ config: SystemConfig }>;
+  importConfig: (cfg: SystemConfig) => Promise<{ imported: boolean }>;
+}
+
+async function deviceRequest<T>(
+  path: string,
+  opts: {
+    method?: "GET" | "POST" | "PUT" | "DELETE";
+    body?: unknown;
+    signal?: AbortSignal;
+    skipCsrf?: boolean;
+  } = {},
+): Promise<T> {
+  const url = `${API_BASE_URL}${path}`;
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (opts.body !== undefined && !(opts.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (!opts.skipCsrf && opts.method && opts.method !== "GET") {
+    const csrf = getCsrfToken();
+    if (csrf) headers["X-CSRF-Token"] = csrf;
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: opts.method ?? "GET",
+      headers,
+      body:
+        opts.body instanceof FormData
+          ? opts.body
+          : opts.body !== undefined
+            ? JSON.stringify(opts.body)
+            : undefined,
+      credentials: "include",
+      signal: opts.signal,
+      cache: "no-store",
+    });
+  } catch (err) {
+    throw new ApiError(
+      err instanceof Error ? `Network error: ${err.message}` : "Network error",
+      0,
+    );
+  }
+
+  if (res.status === 204) return undefined as T;
+  let json: ApiResponse<T> | null = null;
+  try {
+    json = (await res.json()) as ApiResponse<T>;
+  } catch {
+    throw new ApiError(`Invalid JSON response (status ${res.status})`, res.status);
+  }
+  if (!res.ok || !json.success) {
+    const msg = json?.message || `Request failed (${res.status})`;
+    throw new ApiError(msg, res.status);
+  }
+  return json.data;
+}
+
+export const deviceApi: DeviceApiClient = {
+  status:      () => deviceRequest<SystemStatus>("/api/status"),
+  version:     () => deviceRequest<FirmwareInfo>("/api/version"),
+  diagnostics: () => deviceRequest<Diagnostics>("/api/diagnostics"),
+
+  config:      () => deviceRequest<SystemConfig>("/api/config"),
+  calibration: () => deviceRequest<Calibration>("/api/calibration"),
+
+  updateConfig: (cfg) => {
+    const compat = getCompatibilitySnapshot();
+    if (compat && !compat.canViewTelemetry) throw new IncompatibleFirmwareError(compat.message);
+    return deviceRequest<{ updated: boolean }>("/api/config", {
+      method: "POST",
+      body: { ...cfg, requestId: generateRequestId() },
+    });
+  },
+  updateCalibration: (cal) => {
+    const compat = getCompatibilitySnapshot();
+    if (compat && !compat.canViewTelemetry) throw new IncompatibleFirmwareError(compat.message);
+    return deviceRequest<{ updated: boolean }>("/api/calibration", {
+      method: "POST",
+      body: { ...cal, requestId: generateRequestId() },
+    });
+  },
+  voltageCalibrationPoint: (point, reference, raw) => {
+    const compat = getCompatibilitySnapshot();
+    if (compat && !compat.canViewTelemetry) throw new IncompatibleFirmwareError(compat.message);
+    return deviceRequest<{ updated: boolean }>(`/api/calibration/voltage/point/${point}`, {
+      method: "POST",
+      body: { reference, raw, requestId: generateRequestId() },
+    });
+  },
+  acs712ZeroCal: () => {
+    const compat = getCompatibilitySnapshot();
+    if (compat && !compat.canViewTelemetry) throw new IncompatibleFirmwareError(compat.message);
+    return deviceRequest<{ updated: boolean; newOffset: number }>(
+      "/api/calibration/acs712/zero",
+      { method: "POST", body: { requestId: generateRequestId() } },
+    );
+  },
+
+  logs: (filter) => {
+    const params = new URLSearchParams();
+    if (filter?.type && filter.type !== "all") params.set("type", filter.type);
+    if (filter?.limit) params.set("limit", String(filter.limit));
+    if (filter?.since) params.set("since", String(filter.since));
+    const q = params.toString();
+    return deviceRequest<{ logs: ActivityLog[]; total: number }>(`/api/log${q ? `?${q}` : ""}`);
+  },
+
+  // P1-3 canonical contract: POST /api/alarms/{alarmId}/acknowledge
+  alarms: () => deviceRequest<{ active: Alarm[]; history: Alarm[] }>("/api/alarms"),
+  acknowledgeAlarm: (alarmId: string) =>
+    deviceRequest<{ acknowledged: boolean }>(`/api/alarms/${alarmId}/acknowledge`, {
+      method: "POST",
+      body: { requestId: generateRequestId() },
+    }),
+
+  events: (filter) => {
+    const params = new URLSearchParams();
+    if (filter?.from) params.set("from", String(filter.from));
+    if (filter?.to) params.set("to", String(filter.to));
+    if (filter?.limit) params.set("limit", String(filter.limit));
+    const q = params.toString();
+    return deviceRequest<{ events: SystemEvent[]; total: number }>(`/api/events${q ? `?${q}` : ""}`);
+  },
+
+  insights: () => deviceRequest<InsightsEnvelope>("/api/insights"),
+
+  // OTA — uploads binary directly to ESP32 (NOT demo route)
+  otaUpload: (file, onProgress) =>
+    new Promise<{ success: boolean; newVersion?: string }>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${API_BASE_URL}/api/ota`);
+      xhr.withCredentials = true;
+      const csrf = getCsrfToken();
+      if (csrf) xhr.setRequestHeader("X-CSRF-Token", csrf);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+      xhr.onload = () => {
+        try {
+          const json = JSON.parse(xhr.responseText) as ApiResponse<{ success: boolean; newVersion?: string }>;
+          if (xhr.status >= 200 && xhr.status < 300 && json.success) resolve(json.data);
+          else reject(new ApiError(json.message || "OTA failed", xhr.status));
+        } catch {
+          reject(new ApiError("Invalid OTA response", xhr.status));
+        }
+      };
+      xhr.onerror = () => reject(new ApiError("OTA network error", 0));
+      const fd = new FormData();
+      fd.append("file", file);
+      xhr.send(fd);
+    }),
+
+  reboot: () => deviceRequest<{ rebooting: boolean }>("/api/reboot", { method: "POST" }),
+  factoryResetPrepare: () =>
+    deviceRequest<{ token: string; expiresAt: number }>("/api/factory_reset/prepare", {
+      method: "POST",
+    }),
+  factoryResetConfirm: (token) =>
+    deviceRequest<{ reset: boolean }>("/api/factory_reset/confirm", {
+      method: "POST",
+      body: { token, confirm: "RESET" },
+    }),
+
+  updateDevice: (opts) =>
+    deviceRequest<{ updated: boolean }>("/api/config/device", { method: "POST", body: opts }),
+  changePassword: (current, next) =>
+    deviceRequest<{ changed: boolean }>("/api/config/password", {
+      method: "POST",
+      body: { current, next },
+    }),
+  exportConfig: () => deviceRequest<{ config: SystemConfig }>("/api/config/export"),
+  importConfig: (cfg) =>
+    deviceRequest<{ imported: boolean }>("/api/config/import", { method: "POST", body: cfg }),
+};
