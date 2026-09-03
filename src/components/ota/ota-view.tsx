@@ -20,6 +20,7 @@
 
 import { useState, useRef } from 'react';
 import { api } from '@/lib/api';
+import { readSysConfig } from '@/lib/sysConfig';
 import { useLanguage } from '@/components/providers/language-provider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -50,6 +51,65 @@ const OTA_STATUS_STYLE: Record<FirmwareInfo['otaStatus'], { color: string; label
   'unknown': { color: 'text-muted-foreground border-border/50', label: 'Unknown' },
 };
 
+// [W13-3] GAS OTA_LOG — real device-reported OTA events. The OtaEvents sheet
+// has been written by firmware-generic since WAVE-6 (ACTIVATED / ROLLBACK /
+// DOWNLOAD_FAILED / REFUSED); OTA_LOG is the new read action. Falls back to
+// the local mock when GAS is unconfigured or unreachable — the panel must
+// never hard-fail on an offline backend.
+interface GasOtaEvent {
+  timestamp: string;
+  event: string;
+  version: string;
+  message: string;
+}
+
+async function fetchGasOtaHistory(deviceId: string): Promise<OtaHistoryEntry[] | null> {
+  const config = readSysConfig();
+  if (!config?.gas_webapp_url || !config.auth_token) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const res = await fetch(config.gas_webapp_url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'OTA_LOG',
+        token: config.auth_token,
+        device_key: deviceId || config.device_id,
+        limit: 50,
+      }),
+      signal: controller.signal,
+      redirect: 'follow',
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => null)) as
+      | { status?: string; data?: { events?: GasOtaEvent[] } }
+      | null;
+    if (!body || body.status !== 'SUCCESS' || !Array.isArray(body.data?.events)) {
+      return null;
+    }
+    return body.data.events.map((e, i): OtaHistoryEntry => ({
+      id: i,
+      timestamp: Date.parse(e.timestamp) || Date.now(),
+      fromVersion: '',
+      toVersion: e.version ?? '',
+      status:
+        e.event === 'ACTIVATED'
+          ? 'success'
+          : e.event === 'ROLLBACK'
+            ? 'rollback'
+            : 'failed',
+      durationSeconds: 0,
+      event: e.event,
+      message: e.message,
+    }));
+  } catch {
+    clearTimeout(timer);
+    return null;
+  }
+}
+
 export function OtaView() {
   const { t, lang } = useLanguage();
   const qc = useQueryClient();
@@ -65,10 +125,17 @@ export function OtaView() {
     staleTime: 60_000,
   });
 
-  // Fetch OTA history
+  // Fetch OTA history — [W13-3] real GAS OTA_LOG first (device-reported
+  // lifecycle events), mock fallback when GAS is unconfigured/unreachable.
   const { data: historyData, isLoading: historyLoading } = useQuery({
     queryKey: ['ota-history'],
-    queryFn: () => api.otaHistory(),
+    queryFn: async (): Promise<{ entries: OtaHistoryEntry[] }> => {
+      const config = readSysConfig();
+      const deviceId = config?.active_device_id ?? config?.device_id ?? '';
+      const gasEntries = await fetchGasOtaHistory(deviceId);
+      if (gasEntries) return { entries: gasEntries };
+      return api.otaHistory();
+    },
     staleTime: 30_000,
   });
 
@@ -317,8 +384,11 @@ export function OtaView() {
                                 ? 'border-status-error/30 text-status-error'
                                 : 'border-status-warn/30 text-status-warn',
                           )}
+                          title={h.message}
                         >
-                          {h.status}
+                          {/* [W13-3] prefer the raw device event verb (GAS source);
+                              fall back to the coarse mock status word */}
+                          {h.event ?? h.status}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right font-mono text-xs">

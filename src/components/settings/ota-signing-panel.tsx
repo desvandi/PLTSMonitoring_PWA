@@ -20,6 +20,7 @@ interface OtaManifest {
   sha256: string;
   hmac: string;
   size?: number;
+  target?: string;
   published_at?: string;
 }
 
@@ -71,6 +72,11 @@ export function OtaSigningPanel() {
   const [version, setVersion] = useState('1.0.1');
   const [url, setUrl] = useState('');
   const [file, setFile] = useState<File | null>(null);
+  // [W13-2] Manifest target — firmware tree discrimination for mixed fleets.
+  // '' = fleet-wide (pre-W13 behavior); 'generic' / 'modular' = only devices
+  // whose DEVICES!firmware_type matches will be offered the image (the device
+  // self-checks the echoed target too — defense in depth).
+  const [target, setTarget] = useState('');
   // [AUDIT 2026-08-28 G7] Hash disimpan BERSAMA referensi file yang
   // di-hash-nya; `computedSha`/`computedSize` di-derive saat render dan hanya
   // valid selama file itu masih terpilih. Menutup hazard: pengguna memilih
@@ -139,6 +145,7 @@ export function OtaSigningPanel() {
         sha256: computedSha,
         hmac,
         size: computedSize,
+        target: target.trim(),
       },
     });
     setPublishing(false);
@@ -243,6 +250,28 @@ export function OtaSigningPanel() {
                 size: {computedSize} bytes
               </div>
             )}
+          </div>
+
+          {/* [W13-2] Target firmware tree */}
+          <div className="space-y-1.5">
+            <Label htmlFor="ota-target">Target Armada (firmware tree)</Label>
+            <select
+              id="ota-target"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              data-testid="ota-input-target"
+              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <option value="">Semua armada (fleet-wide — perilaku lama)</option>
+              <option value="generic">generic (flat, GAS manifest + HMAC)</option>
+              <option value="modular">modular (nested, MQTT/REST + Ed25519)</option>
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              Manifest bertarget hanya ditawarkan ke perangkat yang kolom{' '}
+              <code>firmware_type</code> di sheet Devices sesuai (perangkat yang
+              belum dideklarasikan hanya menerima manifest fleet-wide).
+              Perangkat juga menolak target yang tidak cocok (REFUSED).
+            </p>
           </div>
 
           <div className="space-y-1.5">

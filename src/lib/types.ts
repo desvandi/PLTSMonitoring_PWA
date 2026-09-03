@@ -540,6 +540,11 @@ export type OtaHistoryEntry = {
   toVersion: string;
   status: 'success' | 'failed' | 'rollback';
   durationSeconds: number;
+  // [W13-3] Present when sourced from the GAS OtaEvents sheet (OTA_LOG):
+  // the raw device-reported event verb + message (ACTIVATED / ROLLBACK /
+  // DOWNLOAD_FAILED / REFUSED / VERIFICATION_FAILED / BOOT_FAILED).
+  event?: string;
+  message?: string;
 };
 
 // ---------- AI INSIGHTS (advisory only — Gemini via ESP32 HMAC proxy) ----------

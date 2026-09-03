@@ -499,6 +499,21 @@ deferral macrotask, deps presisi. Aturan `react-hooks/*` tetap `error`;
   `meter_connected`), kartu **TERUKUR** (daya/tegangan/frekuensi/PF/
   energi kumulatif, badge MEASURED) di halaman AC — tampil hanya saat
   firmware melaporkan meter; terputus → peringatan jujur, bukan 0 W.
+  2026-09-03 — **wave 13 (kompatibilitas armada campuran + OTA end-to-end)**:
+  panel OTA kini membaca **event OTA nyata** dari sheet GAS OtaEvents lewat
+  aksi baru `OTA_LOG` (fallback mock bila GAS tak terkonfigurasi/tak
+  terjangkau — tabel riwayat menampilkan kata kerja perangkat mentah
+  `ACTIVATED`/`ROLLBACK`/`DOWNLOAD_FAILED`/`REFUSED`/`VERIFICATION_FAILED`
+  + pesan via tooltip; sebelumnya sheet itu write-only sejak WAVE-6, operator
+  harus membuka spreadsheet manual). Panel publish (Settings → OTA) kini
+  menawarkan **Target Armada** (`Semua armada`/`generic`/`modular`) →
+  `manifest.target` — GAS menyaring manifest bertarget per kolom
+  `firmware_type` sheet Devices (fail-closed untuk perangkat
+  tak-dideklarasikan), firmware ≥ v1.7.1 juga menolak target asing
+  (`REFUSED`) — menutup risiko cross-flash antar-pohon firmware lewat domain
+  trust HMAC bersama. `OtaHistoryEntry` + field opsional `event`/`message`
+  (`types.ts`). Sinkron binari firmware-generic **v1.7.1** (bin + manifest,
+  v1.7.0 dihapus) via skrip rilis resmi.
 
 ## 13. Panduan Wiring (ringkas)
 
