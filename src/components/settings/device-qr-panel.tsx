@@ -20,10 +20,22 @@ import { useSysConfig } from '@/components/providers/sys-config-provider';
  */
 function encodeOnboardingUrl(payload: object): string {
   const json = JSON.stringify(payload);
+  // [audit-2 R-2 FIX] Replace deprecated escape()/unescape() with
+  // TextEncoder-based UTF-8 → base64. The deprecated functions have been
+  // since ES3 and produce wrong output for non-BMP characters.
   const b64 = typeof window === 'undefined'
     ? Buffer.from(json).toString('base64')
-    : window.btoa(unescape(encodeURIComponent(json)));
+    : btoaUtf8(json);
   return `http://192.168.4.1/#plts=${b64}`;
+}
+
+/** [audit-2 R-2] UTF-8 safe base64 encode for browser. Replaces the
+ * deprecated `btoa(unescape(encodeURIComponent(s)))` idiom. */
+function btoaUtf8(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
+  return window.btoa(binary);
 }
 
 /** WiFi network QR string per ZXing spec — universally supported by phone cameras. */

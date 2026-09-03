@@ -49,6 +49,21 @@ export function verifyJwt(token: string, secret: string): JwtPayload | null {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   const [encHeader, encPayload, encSignature] = parts;
+
+  // [audit-2 K-3 FIX] Validate header BEFORE signature verification.
+  // Defense-in-depth against alg-confusion attacks: if the verifier ever
+  // dispatches by `alg` (e.g., to support RS256 in firmware v2), an attacker
+  // who crafts `{"alg":"none"}` would bypass signature check. We refuse any
+  // alg != HS256 and any typ != JWT explicitly, regardless of dispatch logic.
+  let header: { alg?: unknown; typ?: unknown };
+  try {
+    header = JSON.parse(base64urlDecode(encHeader).toString("utf-8"));
+  } catch {
+    return null;
+  }
+  if (header.alg !== ALG) return null;       // refuse alg=none, RS256, etc.
+  if (header.typ !== "JWT") return null;    // refuse non-JWT tokens
+
   const signingInput = `${encHeader}.${encPayload}`;
   const expectedSig = createHmac("sha256", secret).update(signingInput).digest();
   const actualSig = base64urlDecode(encSignature);

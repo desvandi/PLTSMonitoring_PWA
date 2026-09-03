@@ -268,17 +268,46 @@ self.addEventListener('notificationclick', (event) => {
 async function handleNotificationClick(event) {
   const data = event.notification.data || {};
   const action = event.action;
-  const targetUrl = new URL(data.url || './index.html?from=push', self.location.origin).href;
+  // [audit-2 K-5 FIX] Validate target URL is same-origin. The previous code
+  // used `new URL(data.url, base)` which IGNORES base when data.url is
+  // absolute — an attacker with VAPID private key could send
+  // data.url='https://evil-phishing.example/' and the SW would open it from
+  // a notification that looks legitimate. Force same-origin; if the URL is
+  // cross-origin, fall back to the app's alarm view.
+  var fallbackUrl = './index.html?from=push';
+  var targetUrl;
+  try {
+    var parsed = new URL(data.url || fallbackUrl, self.location.origin);
+    if (parsed.origin !== self.location.origin) {
+      // Cross-origin URL in push payload — suspicious. Use fallback.
+      targetUrl = new URL(fallbackUrl, self.location.origin).href;
+    } else {
+      targetUrl = parsed.href;
+    }
+  } catch (e) {
+    targetUrl = new URL(fallbackUrl, self.location.origin).href;
+  }
 
   // Aksi "ack": kirim konfirmasi penanganan alarm ke GAS, tanpa membuka app.
   if (action === 'ack' && data.alarmId) {
+    // [audit-2 K-5] Also validate ackUrl is same-origin or trusted GAS origin.
+    // The ackUrl is constructed by the GAS sender — if GAS is compromised,
+    // ackUrl could point anywhere. Only send ack to known-trusted origins.
     try {
-      await fetch(data.ackUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'ackAlarm', alarmId: data.alarmId }),
-        credentials: 'omit'
-      });
+      var ackParsed = new URL(data.ackUrl || '', self.location.origin);
+      var trustedOrigins = [self.location.origin];
+      // Allow GAS script.google.com (the only legitimate ack target).
+      if (ackParsed.hostname === 'script.google.com') {
+        trustedOrigins.push(ackParsed.origin);
+      }
+      if (trustedOrigins.indexOf(ackParsed.origin) !== -1) {
+        await fetch(ackParsed.href, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ action: 'ackAlarm', alarmId: data.alarmId }),
+          credentials: 'omit'
+        });
+      }
     } catch (e) { /* ack best-effort */ }
     // Tetap buka app agar pengguna melihat status alarm.
     return openOrFocus(targetUrl);

@@ -16,25 +16,15 @@
 
 import type {
   ApiResponse,
-  SystemStatus,
   SystemConfig,
-  FirmwareInfo,
-  ActivityLog,
-  LogType,
-  Alarm,
-  SystemEvent,
-  Diagnostics,
   Calibration,
   DeviceConfig,
-  InsightsEnvelope,
-  DailyEnergyRecord,
   ReportRequest,
-  OtaHistoryEntry,
 } from "@/lib/types";
 
 // Re-export shared symbols so existing imports keep working.
 export { API_BASE_URL, ApiError, setCsrfToken, getCsrfToken, generateRequestId } from "./apiShared";
-import { API_BASE_URL, setCsrfToken, getCsrfToken, generateRequestId } from "./apiShared";
+import { API_BASE_URL, getCsrfToken } from "./apiShared";
 export { deviceApi } from "./deviceApi";
 export { backendApi } from "./backendApi";
 import { deviceApi } from "./deviceApi";
@@ -170,7 +160,3 @@ async function deviceRequest<T>(
   }
   return json.data;
 }
-
-// silence unused-import warning for symbols re-exported above
-void setCsrfToken;
-void generateRequestId;

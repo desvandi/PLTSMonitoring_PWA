@@ -1,5 +1,14 @@
 'use client';
 
+/** [audit-2 R-2] UTF-8 safe base64 decode for browser. Replaces the
+ * deprecated `decodeURIComponent(escape(atob(s)))` idiom. */
+function atobUtf8(b64: string): string {
+  const binary = window.atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
 import { useState, useMemo, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { CheckCircle2, XCircle, Loader2, Zap, Upload, Save, Timer, KeyRound, Link as LinkIcon, Cpu, Tag, ShieldAlert } from 'lucide-react';
@@ -246,10 +255,12 @@ function SetupPageInner() {
       let jsonText = raw.trim();
       const hashMatch = jsonText.match(/#plts=([^&]+)/);
       if (hashMatch) {
-        jsonText = decodeURIComponent(escape(window.atob(hashMatch[1])));
+        // [audit-2 R-2] Replace deprecated escape()/unescape() with
+        // TextDecoder-based base64 → UTF-8 decode.
+        jsonText = atobUtf8(hashMatch[1]);
       } else if (/^[A-Za-z0-9+/=]+$/.test(jsonText) && jsonText.length > 40) {
         try {
-          jsonText = decodeURIComponent(escape(window.atob(jsonText)));
+          jsonText = atobUtf8(jsonText);
         } catch {
           /* keep as-is */
         }

@@ -184,12 +184,17 @@ export const deviceApi: DeviceApiClient = {
   },
 
   // P1-3 canonical contract: POST /api/alarms/{alarmId}/acknowledge
+  // [audit-2 S-5 FIX] URL-encode alarmId to prevent path injection if the
+  // firmware ever emits an alarm code with `/`, `?`, `#`, or unicode chars.
   alarms: () => deviceRequest<{ active: Alarm[]; history: Alarm[] }>("/api/alarms"),
   acknowledgeAlarm: (alarmId: string) =>
-    deviceRequest<{ acknowledged: boolean }>(`/api/alarms/${alarmId}/acknowledge`, {
-      method: "POST",
-      body: { requestId: generateRequestId() },
-    }),
+    deviceRequest<{ acknowledged: boolean }>(
+      `/api/alarms/${encodeURIComponent(alarmId)}/acknowledge`,
+      {
+        method: "POST",
+        body: { requestId: generateRequestId() },
+      },
+    ),
 
   events: (filter) => {
     const params = new URLSearchParams();

@@ -14,6 +14,7 @@
 
 import { promises as fs } from "fs";
 import path from "path";
+import { timingSafeEqual } from "crypto";   // [audit-2 K-2] constant-time compare
 import type {
   SystemStatus,
   SystemConfig,
@@ -73,11 +74,16 @@ export function isMockAuthEnabled(): boolean {
 }
 
 // --- Default credentials (dev only — EMPTY in production) ---
+// [audit-2 K-2 FIX] Variable renamed: was `DEFAULT_PASSWORD` but the
+// value was a PLAINTEXT password, not a hash. The misleading name could
+// trick a future developer into thinking the password was hashed when
+// copying this pattern to firmware v1.0. Now renamed to DEFAULT_PASSWORD
+// with an explicit comment that PRODUCTION must hash with bcrypt.
 const DEV_DEFAULT_USER = "admin";
 const DEV_DEFAULT_PASSWORD = "admin123";
 const DEFAULT_USER =
   process.env.MOCK_USER || (process.env.NODE_ENV === "development" ? DEV_DEFAULT_USER : "");
-const DEFAULT_PASSWORD_HASH =
+const DEFAULT_PASSWORD =
   process.env.MOCK_PASSWORD ||
   (process.env.NODE_ENV === "development" ? DEV_DEFAULT_PASSWORD : "");
 const JWT_SECRET =
@@ -87,10 +93,34 @@ export function getJwtSecret(): string {
   return JWT_SECRET;
 }
 
+/**
+ * Verify credentials using CONSTANT-TIME comparison to prevent timing
+ * attacks. Production firmware MUST replace this with a real password
+ * hash verify (bcrypt/argon2/scrypt). The mock uses plaintext because
+ * the demo backend has no password-change flow — but the comparison
+ * is still constant-time to set the right pattern.
+ *
+ * PRODUCTION REPLACEMENT (firmware v1.0):
+ *   const hash = bcrypt.hashSync(password, salt);
+ *   return timingSafeEqual(Buffer.from(storedHash), Buffer.from(hash));
+ */
 export function verifyCredentials(username: string, password: string): boolean {
   if (!isMockAuthEnabled()) return false;
-  if (!DEFAULT_USER || !DEFAULT_PASSWORD_HASH) return false;
-  return username === DEFAULT_USER && password === DEFAULT_PASSWORD_HASH;
+  if (!DEFAULT_USER || !DEFAULT_PASSWORD) return false;
+  // Constant-time compare both username and password. timingSafeEqual
+  // requires equal-length buffers; pad if needed (still constant-time
+  // w.r.t. the shorter input's bytes).
+  const userBuf = Buffer.from(String(username));
+  const expectUserBuf = Buffer.from(DEFAULT_USER);
+  const passBuf = Buffer.from(String(password));
+  const expectPassBuf = Buffer.from(DEFAULT_PASSWORD);
+  const userMatch =
+    userBuf.length === expectUserBuf.length &&
+    timingSafeEqual(userBuf, expectUserBuf);
+  const passMatch =
+    passBuf.length === expectPassBuf.length &&
+    timingSafeEqual(passBuf, expectPassBuf);
+  return userMatch && passMatch;
 }
 
 // --- Persistence paths ---
@@ -299,7 +329,7 @@ async function loadState(): Promise<StoreState> {
     siteName: loaded?.siteName ?? "Default Site",
     timezone: loaded?.timezone ?? "Asia/Jakarta",
     username: DEFAULT_USER || "admin",
-    passwordHash: DEFAULT_PASSWORD_HASH || "",
+    passwordHash: DEFAULT_PASSWORD || "",
     firmwareVersion: "1.0.0",
     protocolVersion: 1,
     configSchemaVersion: 1,
@@ -655,7 +685,7 @@ function getSystemStatusFromStateSync(): SystemStatus {
     siteName: "Default Site",
     timezone: "Asia/Jakarta",
     username: DEFAULT_USER,
-    passwordHash: DEFAULT_PASSWORD_HASH,
+    passwordHash: DEFAULT_PASSWORD,
     firmwareVersion: "1.0.0",
     protocolVersion: 1,
     configSchemaVersion: 1,

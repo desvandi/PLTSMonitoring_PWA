@@ -100,7 +100,14 @@ function parseDeviceProfile(raw: unknown): DeviceProfile | null {
   if (!raw || typeof raw !== 'object') return null;
   const obj = raw as Record<string, unknown>;
   if (!isNonEmptyString(obj.device_id)) return null;
-  if (!isNonEmptyString(obj.gas_webapp_url) || !obj.gas_webapp_url.toString().startsWith('http')) return null;
+  // [audit-2 S-1 FIX] Require HTTPS (or localhost in dev). The previous
+  // check `startsWith('http')` matched `http://` (plaintext), `httpsomehost`,
+  // etc. Sending admin_token over HTTP leaks it to MITM.
+  if (!isNonEmptyString(obj.gas_webapp_url)) return null;
+  const gasUrl = obj.gas_webapp_url.toString();
+  const isHttps = gasUrl.startsWith('https://');
+  const isLocalDev = gasUrl.startsWith('http://localhost') || gasUrl.startsWith('http://127.0.0.1');
+  if (!isHttps && !(isLocalDev && process.env.NODE_ENV !== 'production')) return null;
   if (!isNonEmptyString(obj.auth_token)) return null;
   return {
     device_id: obj.device_id as string,
@@ -357,6 +364,12 @@ export async function pingGasEndpoint(
 ): Promise<HandshakeResult> {
   if (!gasUrl || !gasUrl.startsWith('http')) {
     return { ok: false, message: 'URL GAS tidak valid (harus diawali http/https).' };
+  }
+  // [audit-2 S-1] Enforce HTTPS in production — admin_token is sent in body.
+  const isHttps = gasUrl.startsWith('https://');
+  const isLocalDev = gasUrl.startsWith('http://localhost') || gasUrl.startsWith('http://127.0.0.1');
+  if (!isHttps && !(isLocalDev && process.env.NODE_ENV !== 'production')) {
+    return { ok: false, message: 'URL GAS harus HTTPS di produksi (token dikirim via body).' };
   }
   if (!token) {
     return { ok: false, message: 'Auth token tidak boleh kosong.' };

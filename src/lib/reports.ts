@@ -78,10 +78,17 @@ export function exportPdf(records: DailyEnergyRecord[], title: string): void {
 }
 
 function renderReportHtml(records: DailyEnergyRecord[], title: string): string {
+  // [audit-2 K-1 FIX] All interpolations are HTML-escaped to prevent stored
+  // XSS. The previous code wrote `r.date` etc. directly into the document
+  // via win.document.write() — a backend compromise (GAS / device / MQTT)
+  // that returned a malicious date string like `'<script>fetch("/api/config/export")...'`
+  // would execute in the PWA origin and exfiltrate auth credentials.
+  // escapeHtml covers the 5 OWASP-mandated characters; combined with the
+  // sandbox CSP below, the popup is locked down to same-origin + no scripts.
   const rows = records
     .map(
       (r) => `<tr>
-      <td>${r.date}</td>
+      <td>${escapeHtml(r.date)}</td>
       <td class="num">${r.chargeWh.toFixed(0)}</td>
       <td class="num">${r.dischargeWh.toFixed(0)}</td>
       <td class="num">${r.netWh.toFixed(0)}</td>
@@ -101,7 +108,8 @@ function renderReportHtml(records: DailyEnergyRecord[], title: string): string {
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>${title}</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self'" />
+<title>${escapeHtml(title)}</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #0a0f1a; padding: 24px; }
   h1 { font-size: 20px; margin: 0 0 4px; }
@@ -115,8 +123,8 @@ function renderReportHtml(records: DailyEnergyRecord[], title: string): string {
 </style>
 </head>
 <body>
-  <h1>${title}</h1>
-  <p class="subtitle">Generated: ${new Date().toLocaleString()} · Records: ${records.length}</p>
+  <h1>${escapeHtml(title)}</h1>
+  <p class="subtitle">Generated: ${escapeHtml(new Date().toLocaleString())} · Records: ${records.length}</p>
   <table>
     <thead><tr>
       <th>Date</th>
@@ -135,9 +143,20 @@ function renderReportHtml(records: DailyEnergyRecord[], title: string): string {
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>
-  <p class="footer">PLTS Monitor PWA · Production-grade · CSV/PDF/JSON export</p>
+  <p class="footer">PLTS Monitor PWA · Production-hardening in progress · CSV/PDF/JSON export</p>
 </body>
 </html>`;
+}
+
+/** [audit-2 K-1] HTML-escape the 5 OWASP-mandated characters. */
+function escapeHtml(s: string | number | null | undefined): string {
+  if (s == null) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 export function downloadBlob(content: string, filename: string, mime: string): void {

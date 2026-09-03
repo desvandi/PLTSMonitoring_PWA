@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, verifyCsrfToken } from '@/lib/auth';
-import { ok, fail, unauthorized } from '@/lib/apiResponse';
+import { fail, unauthorized } from '@/lib/apiResponse';   // [audit-2] 'ok' removed (unused after P1-5 rewrite)
 
 export const runtime = 'nodejs';
 

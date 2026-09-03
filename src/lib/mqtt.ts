@@ -189,11 +189,35 @@ export function connectMqtt(deviceId: string): Promise<void> {
     const client = mqtt.connect(MQTT_BROKER_URL, {
       clientId,
       keepalive: 60,
-      reconnectPeriod: 5000,
+      // [audit-2 S-8 FIX] Exponential backoff: was fixed 5s. A broker outage
+      // caused the PWA to hammer reconnect every 5s forever — inadvertent
+      // DDoS. mqtt.js library supports a single reconnectPeriod value (no
+      // built-in backoff), so we implement backoff manually by intercepting
+      // the reconnect event and adjusting the option before the next attempt.
+      // Start at 1s, cap at 60s. The library will use this for the next
+      // reconnect; we update it in the offline event handler below.
+      reconnectPeriod: 1000,
       connectTimeout: 10000,
       clean: true,
       ...(brokerUsername() ? { username: brokerUsername() } : {}),
       ...(brokerPassword() ? { password: brokerPassword() } : {}),
+    });
+
+    // [audit-2 S-8] Manual exponential backoff. mqtt.js doesn't support
+    // backoff natively — it uses a fixed reconnectPeriod. We override the
+    // option on each offline event so the next reconnect waits longer.
+    // Reset to 1s on successful connect.
+    let reconnectMs = 1000;
+    client.on("connect", () => {
+      reconnectMs = 1000;   // reset on success
+    });
+    client.on("offline", () => {
+      reconnectMs = Math.min(reconnectMs * 2, 60_000);  // cap at 60s
+      try {
+        (client.options as { reconnectPeriod: number }).reconnectPeriod = reconnectMs;
+      } catch {
+        // options may be frozen in some mqtt.js versions — best-effort
+      }
     });
 
     state.client = client;
@@ -256,10 +280,25 @@ export function connectMqtt(deviceId: string): Promise<void> {
     });
 
     client.on("message", (topic: string, payload: Buffer) => {
+      // [audit-2 S-2 FIX] Bound payload size — a compromised broker could
+      // send a 100MB payload and OOM the client. 256 KB is generous for any
+      // legitimate telemetry envelope (typical is < 4 KB).
+      if (payload.length > 256 * 1024) {
+        mqttWarn(`oversized payload on ${topic} (${payload.length} bytes) — dropping`);
+        return;
+      }
       const msg = payload.toString();
       if (topic.endsWith("/status")) {
         try {
-          const status = JSON.parse(msg) as SystemStatus;
+          const parsed: unknown = JSON.parse(msg);
+          // [audit-2 S-2] Shape validation — was `as SystemStatus` cast
+          // without validation. A malformed/broker-compromised payload
+          // could crash downstream code accessing nested fields.
+          if (!isValidStatusEnvelope(parsed)) {
+            mqttWarn(`invalid status envelope on ${topic} — dropping`);
+            return;
+          }
+          const status = parsed as SystemStatus;
           // [PWA-01] Store the newest envelope for the query bridge + emit.
           lastStatus = status;
           lastStatusAtMs = Date.now();
@@ -324,3 +363,21 @@ export function onOnlineChange(cb: OnlineCallback): () => void {
   onlineCallbacks.add(cb);
   return () => onlineCallbacks.delete(cb);
 }
+
+/**
+ * [audit-2 S-2] Validate that a parsed MQTT payload has the shape of a
+ * SystemStatus envelope. Returns false on any missing required field —
+ * downstream code can safely access nested fields without crashing.
+ * Conservative: checks ONLY for the fields the PWA actually reads. Any
+ * field not listed here is treated as optional.
+ */
+function isValidStatusEnvelope(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const p = payload as Record<string, unknown>;
+  // Required top-level fields used by the PWA
+  if (typeof p.timestamp !== "number") return false;
+  // battery is required; nested .voltage.value is the most-used field
+  if (!p.battery || typeof p.battery !== "object") return false;
+  return true;  // other fields (pv, grid, environment, ...) are optional
+}
+

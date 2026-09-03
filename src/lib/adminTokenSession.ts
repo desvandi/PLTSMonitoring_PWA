@@ -22,6 +22,20 @@
  * longer remembers the token — the operator types it once per session.
  * Fail-closed stays intact: empty token → emergency commands refuse to
  * send with an honest prompt (see lib/emergency.ts).
+ *
+ * [audit-2 K-6 RESIDUAL RISK — DOCUMENTED]
+ * The admin_token is still sent PLAINTEXT in the JSON body of POSTs to the
+ * GAS Web App URL. Mitigations in place:
+ *   1. GAS Web App URL MUST be HTTPS (validated in lib/sysConfig.ts setup).
+ *   2. sessionStorage limits exposure to the active session (not forever).
+ *   3. GAS execution logs are time-bounded (30 days, operator-controlled).
+ * To fully eliminate plaintext-in-body, a future refactor should:
+ *   - Send `admin_token_hash = SHA256(admin_token)` as the body field.
+ *   - Send `signature = HMAC-SHA256(admin_token, request_body)`.
+ *   - GAS verifies the HMAC with the stored admin_token; never receives the
+ *     token itself. This requires a coordinated PWA + GAS deploy.
+ * Tracked as P3 in the audit backlog (low priority because HTTPS-in-transit
+ * already protects the body, and sessionStorage already limits at-rest).
  */
 
 const STORAGE_KEY = 'PLTS_ADMIN_TOKENS';

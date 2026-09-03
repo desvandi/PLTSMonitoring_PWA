@@ -7,12 +7,20 @@ export const runtime = 'nodejs';
 
 // Simple in-memory rate limiter
 const rateMap = new Map<string, { count: number; firstAt: number; blockedUntil: number }>();
-const MAX_ATTEMPTS = 5;
-const BLOCK_MS = 60_000;
-// [AUDIT 2026-08-28 G14] Entri rate-limit kini dipangkas: tanpa ini, entri IP
-// yang tak pernah sukses login menumpuk selamanya (kebocoran memori pelan di
-// server long-running). Jendela 15 menit >> blokir 60 detik.
-const RATE_ENTRY_TTL_MS = 15 * 60_000;
+// [audit-2 S-16 FIX] Progressive backoff: was fixed 5 attempts → 60s lock.
+// Sustained brute force could do 5 attempts/min = 7200/hour. Now escalating:
+//   5 fails  → 60s lock
+//   10 fails → 5min lock
+//   20 fails → 30min lock
+//   40 fails → 2h lock (cap)
+function getLockDurationMs(consecutiveFailures: number): number {
+  if (consecutiveFailures >= 40) return 2 * 60 * 60_000;   // 2 hours
+  if (consecutiveFailures >= 20) return 30 * 60_000;        // 30 minutes
+  if (consecutiveFailures >= 10) return 5 * 60_000;         // 5 minutes
+  if (consecutiveFailures >= 5)  return 60_000;             // 60 seconds
+  return 0;
+}
+const RATE_ENTRY_TTL_MS = 2 * 60 * 60_000;  // 2 hours (matches max lock)
 
 function pruneStaleRateEntries(now: number): void {
   for (const [ip, e] of rateMap) {
@@ -61,9 +69,11 @@ export async function POST(req: NextRequest) {
       rateMap.set(ip, e);
     }
     e.count++;
-    if (e.count >= MAX_ATTEMPTS) {
-      e.blockedUntil = now + BLOCK_MS;
-      e.count = 0;
+    const lockMs = getLockDurationMs(e.count);
+    if (lockMs > 0) {
+      e.blockedUntil = now + lockMs;
+      // Don't reset count — keep escalating across lock windows.
+      // Count is only reset on successful login (rateMap.delete below).
     }
     return unauthorized('Invalid username or password');
   }

@@ -26,6 +26,10 @@ const eslintConfig = [
       // (Service Worker ESLint worker, hashed filename). Ignored for the same
       // reason as sw.js — they are machine-generated minified output.
       "public/swe-worker-*.js",
+      // [audit-2] Third-party vendored library — minified, not our code.
+      // eslint was reporting 80+ errors in these files (pre-existing, not
+      // introduced by this audit). They are pinned immutable artifacts.
+      "public/vendor/**",
       "scripts/**",
       // PWA push-alarm vanilla (punya suite regresi sendiri di repo
       // kembar; bukan domain lint Next.js/TS)
