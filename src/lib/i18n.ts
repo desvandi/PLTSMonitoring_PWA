@@ -232,6 +232,14 @@ export type TranslationKey =
   | "ac.signal_quality_invalid"
   | "ac.assumed_voltage"
   | "ac.assumed_power_factor"
+  | "ac.meter_title"
+  | "ac.meter_power"
+  | "ac.meter_voltage"
+  | "ac.meter_frequency"
+  | "ac.meter_power_factor"
+  | "ac.meter_energy"
+  | "ac.meter_note"
+  | "ac.meter_disconnected"
   // Environment
   | "environment.title"
   | "environment.subtitle"
@@ -663,6 +671,14 @@ const id: Dict = {
   "ac.signal_quality_invalid": "Tidak Valid",
   "ac.assumed_voltage": "Tegangan Asumsi",
   "ac.assumed_power_factor": "Faktor Daya Asumsi",
+  "ac.meter_title": "Meter AC Nyata — PZEM-004T",
+  "ac.meter_power": "Daya Terukur",
+  "ac.meter_voltage": "Tegangan Terukur",
+  "ac.meter_frequency": "Frekuensi",
+  "ac.meter_power_factor": "Faktor Daya Terukur",
+  "ac.meter_energy": "Energi Kumulatif",
+  "ac.meter_note": "Daya aktif diukur langsung — bukan estimasi.",
+  "ac.meter_disconnected": "Meter PZEM terpasang di firmware tetapi tidak merespons — daya terukur tidak tersedia; estimasi ACS712 tetap digunakan.",
   "environment.title": "Lingkungan",
   "environment.subtitle": "Suhu dan kelembapan ambient/enclosure",
   "environment.temperature": "Suhu Ambient",
@@ -1078,6 +1094,14 @@ const en: Dict = {
   "ac.signal_quality_invalid": "Invalid",
   "ac.assumed_voltage": "Assumed Voltage",
   "ac.assumed_power_factor": "Assumed Power Factor",
+  "ac.meter_title": "Real AC Meter — PZEM-004T",
+  "ac.meter_power": "Measured Power",
+  "ac.meter_voltage": "Measured Voltage",
+  "ac.meter_frequency": "Frequency",
+  "ac.meter_power_factor": "Measured Power Factor",
+  "ac.meter_energy": "Cumulative Energy",
+  "ac.meter_note": "Active power measured directly — not an estimate.",
+  "ac.meter_disconnected": "PZEM meter present in firmware but not responding — measured power unavailable; the ACS712 estimate remains in use.",
   "environment.title": "Environment",
   "environment.subtitle": "Ambient / enclosure temperature and humidity",
   "environment.temperature": "Ambient Temperature",

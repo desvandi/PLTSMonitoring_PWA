@@ -23,6 +23,12 @@ export interface FleetTelemetry {
   emg_reason: string | null;
   emg_estop: boolean | null;
   emg_trips: number | null;
+  // v1.7.0 [W12-2] — PZEM-004T real AC meter (GAS LATEST ac.meter block:
+  // connected/power/voltage). null = no meter or not connected — the
+  // estimate above stays the headline, never a fabricated reading.
+  p_ac_meter: number | null;
+  meter_v: number | null;
+  meter_connected: boolean | null;
   ina219_ok: string | null;
   soc_percent: number | null;
   // SOC provenance from the canonical GAS envelope — every surface that
@@ -57,6 +63,7 @@ export function parseLatestEnvelope(data: unknown): FleetTelemetry {
   const ac = (d.ac ?? {}) as Record<string, unknown>;
   const acI = (ac.rmsCurrent ?? {}) as Record<string, unknown>;
   const acGen = (ac.gensetRmsCurrent ?? {}) as Record<string, unknown>;
+  const meter = (ac.meter ?? {}) as Record<string, unknown>;
   const emg = (d.emergency ?? {}) as Record<string, unknown>;
   const env = (d.environment ?? {}) as Record<string, unknown>;
   const envT = (env.temperature ?? {}) as Record<string, unknown>;
@@ -84,6 +91,16 @@ export function parseLatestEnvelope(data: unknown): FleetTelemetry {
           ? d.emg_estop === true || d.emg_estop === "true" || d.emg_estop === "TRUE"
           : null,
     emg_trips: asNum(emg.tripCount ?? d.emg_trips),
+    // v1.7.0 [W12-2] — PZEM meter trio (nested GAS LATEST; flat fallback for
+    // a hypothetical legacy backend that stores the raw columns).
+    p_ac_meter: asNum(meter.power ?? d.p_ac_meter),
+    meter_v: asNum(meter.voltage ?? d.meter_v),
+    meter_connected:
+      meter.connected != null
+        ? meter.connected === true || meter.connected === "TRUE"
+        : d.meter_connected != null
+          ? d.meter_connected === true || d.meter_connected === "TRUE"
+          : null,
     ina219_ok:
       health.ina219Online != null
         ? health.ina219Online === true || health.ina219Online === "TRUE"

@@ -486,6 +486,19 @@ deferral macrotask, deps presisi. Aturan `react-hooks/*` tetap `error`;
   import balik ke CDN = lubang rantai pasokan WebSerial) + `unpkg.com`
   dihapus dari CSP. W11-3 header HSTS ditambahkan; W11-4 CSP `connect-src`
   buang `ws:` (hanya `wss:`) + `serial=(self)` di Permissions-Policy.
+  2026-09-03 — **wave 12 (regresi kontrak lintas-lapis penuh, post-v1.7.0)**:
+  W12-1 kontrak telemetri darurat — firmware modular memancarkan
+  `estopOpen`/`trips` sementara GAS/PWA membaca `estopLine`/`tripCount`/
+  `estopLineOpen` → status E-stop + hitungan trip hilang senyap
+  (panel darurat menampilkan "tertutup"/"—" padahal perangkat TRIP);
+  fix firmware (kunci kanonik `estopLineOpen`/`tripCount`) + rantai
+  fallback di ingest GAS — parser PWA (`gasEnvelope.ts`) kini lolos
+  regresi 13 uji baru (`gasEnvelope.test.ts`). W12-2 PZEM-004T v1.7.0
+  dead-end → jalur pelaporan tersambung: slot `AcMeterMeasurement` di
+  `types.ts`, parse blok `ac.meter` (fleet view `p_ac_meter`/`meter_v`/
+  `meter_connected`), kartu **TERUKUR** (daya/tegangan/frekuensi/PF/
+  energi kumulatif, badge MEASURED) di halaman AC — tampil hanya saat
+  firmware melaporkan meter; terputus → peringatan jujur, bukan 0 W.
 
 ## 13. Panduan Wiring (ringkas)
 
@@ -515,6 +528,7 @@ ACS712 di fasa L saja → GPIO 35 · RS485 (MAX3485) TX 16/RX 17/DE 4 · CAN
 | Fleet 404 untuk device ke-2 dst | device_key tidak terdaftar di tab `Devices` GAS | Tambahkan baris device di sheet `Devices` |
 | Tombol `/install` mati | Browser tanpa Web Serial (iOS/Android/Firefox) | Gunakan Chrome/Edge **desktop** |
 | `/install` memuat komponen dari CDN? | Tidak — W11-2: self-host `/vendor/esp-web-tools/10.4.0/` (pinned, immutable cache) | Perilaku benar; upgrade via prosedur PROVENANCE.md |
+| Kartu "Daya Terukur (PZEM)" tidak muncul di halaman AC | Firmware belum melaporkan blok `ac.meter` — flag `PLTS_ENABLE_PZEM_AC` masih 0 (default, menunggu validasi bench) atau meter tidak terpasang | Perilaku benar (absen = jujur "tidak ada meter"); nyalakan flag firmware setelah `docs/bench/PANDUAN_VALIDASI.md` §3 lulus |
 | Versi firmware di `/install` "tidak diketahui" | `public/firmware/manifest.json` tak terbaca | Pastikan file ada & valid (label fail-closed) |
 | Service worker stale saat dev | Cache Serwist lama | `SERWIST_DEV=true npm run dev` + hard reload |
 

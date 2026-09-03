@@ -16,15 +16,16 @@ import { useStatus } from '@/hooks/useApi';
 import { useLanguage } from '@/components/providers/language-provider';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { AlertTriangle, Zap, AlertCircle } from 'lucide-react';
+import { AlertTriangle, Zap, AlertCircle, Gauge } from 'lucide-react';
 import {
   QualityBadge,
   SourceBadge,
   FreshnessIndicator,
 } from '@/components/dashboard/measurement-card';
-import { fmtA, fmtW } from '@/lib/format';
+import { fmtA, fmtW, fmtV, fmtWh } from '@/lib/format';
 import { cn } from '@/lib/utils';
-import type { AcTelemetry } from '@/lib/types';
+import type { AcTelemetry, AcMeterMeasurement } from '@/lib/types';
+import type { TranslationKey } from '@/lib/i18n';
 
 const SIGNAL_QUALITY_LABEL: Record<AcTelemetry['signalQuality'], { color: string; key: string }> = {
   GOOD: { color: 'text-status-on', key: 'ac.signal_quality_good' },
@@ -33,6 +34,98 @@ const SIGNAL_QUALITY_LABEL: Record<AcTelemetry['signalQuality'], { color: string
   INVALID: { color: 'text-status-error', key: 'ac.signal_quality_invalid' },
   UNKNOWN: { color: 'text-muted-foreground', key: 'common.unknown' },
 };
+
+// v1.7.0 [W12-2] — PZEM locals (null → "N/A", never 0).
+const fmtHz = (v: number | null) => (v != null ? `${v.toFixed(1)} Hz` : 'N/A');
+const fmtPf = (v: number | null) => (v != null ? v.toFixed(2) : 'N/A');
+
+function MeterSection({ meter, t }: { meter: AcMeterMeasurement; t: (key: TranslationKey) => string }) {
+  if (!meter.connected) {
+    // Honest absence: the firmware carries the meter but it stopped
+    // answering — never fall back to a fabricated 0 W.
+    return (
+      <Card className="border-status-warn/40 bg-status-warn/5">
+        <CardContent className="p-3 flex items-start gap-2">
+          <AlertCircle className="w-4 h-4 text-status-warn mt-0.5 flex-shrink-0" />
+          <p className="text-xs text-status-warn">{t('ac.meter_disconnected')}</p>
+        </CardContent>
+      </Card>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <Gauge className="w-4 h-4 text-status-on" />
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+          {t('ac.meter_title')}
+        </h2>
+        <span className="text-[10px] text-muted-foreground">{t('ac.meter_note')}</span>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {/* Measured Power — MEASURED (PZEM-004T, headline) */}
+        <Card className="border-status-on/30 bg-status-on/5">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs text-muted-foreground uppercase tracking-wider">
+                {t('ac.meter_power')}
+              </p>
+              <SourceBadge source="MEASURED" />
+            </div>
+            <p className="text-2xl font-bold font-mono text-status-on">
+              {fmtW(meter.power)}
+            </p>
+            <p className="text-[10px] text-muted-foreground mt-1">PZEM-004T</p>
+          </CardContent>
+        </Card>
+        {/* Measured Voltage */}
+        <Card className="border-border/60">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs text-muted-foreground uppercase tracking-wider">
+                {t('ac.meter_voltage')}
+              </p>
+              <SourceBadge source="MEASURED" />
+            </div>
+            <p className="text-2xl font-bold font-mono">{fmtV(meter.voltage)}</p>
+          </CardContent>
+        </Card>
+        {/* Frequency */}
+        <Card className="border-border/60">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs text-muted-foreground uppercase tracking-wider">
+                {t('ac.meter_frequency')}
+              </p>
+              <SourceBadge source="MEASURED" />
+            </div>
+            <p className="text-2xl font-bold font-mono">{fmtHz(meter.frequency)}</p>
+          </CardContent>
+        </Card>
+        {/* Measured Power Factor */}
+        <Card className="border-border/60">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs text-muted-foreground uppercase tracking-wider">
+                {t('ac.meter_power_factor')}
+              </p>
+              <SourceBadge source="MEASURED" />
+            </div>
+            <p className="text-2xl font-bold font-mono">{fmtPf(meter.powerFactor)}</p>
+          </CardContent>
+        </Card>
+      </div>
+      {/* Cumulative import energy (PZEM register) */}
+      <Card className="border-border/60">
+        <CardContent className="p-3 flex items-center justify-between text-xs">
+          <span className="text-muted-foreground uppercase tracking-wider">
+            {t('ac.meter_energy')}:
+          </span>
+          <span className="font-mono font-semibold">{fmtWh(meter.energy)}</span>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
 
 export function AcOutputView() {
   const { t } = useLanguage();
@@ -177,6 +270,11 @@ export function AcOutputView() {
           </CardContent>
         </Card>
       </div>
+
+      {/* [W12-2 v1.7.0] — PZEM-004T real AC meter. Renders ONLY when the
+          firmware reports the block (undefined = no meter — honest absence,
+          the estimate above stays the headline). */}
+      {ac.meter && <MeterSection meter={ac.meter} t={t} />}
 
       {/* Invalid signal warning */}
       {ac.signalQuality === 'INVALID' && (

@@ -167,6 +167,20 @@ export interface AcEstimatedPower {
   };
 }
 
+// v1.7.0 [W12-2] — PZEM-004T v3 real AC power meter (optional firmware flag
+// PLTS_ENABLE_PZEM_AC). Absent on firmware without the meter → undefined
+// (honest: no meter). A present-but-disconnected meter reports
+// connected=false with null values — never fabricated zeros.
+export interface AcMeterMeasurement {
+  connected: boolean;                      // PZEM answering within timeout
+  voltage: number | null;                  // V, MEASURED
+  current: number | null;                  // A, MEASURED
+  power: number | null;                    // W, MEASURED (active power)
+  energy: number | null;                   // Wh, MEASURED (cumulative import)
+  frequency: number | null;                // Hz, MEASURED
+  powerFactor: number | null;              // 0..1, MEASURED
+}
+
 export interface AcTelemetry {
   rmsCurrent: Measurement<number>;        // A, MEASURED (ACS712 RMS)
   peakCurrent: Measurement<number>;       // A, MEASURED (ACS712 peak)
@@ -176,6 +190,8 @@ export interface AcTelemetry {
   // v1.7.0 [E-WAVE] — 2nd ACS712 (genset→inverter feed). Absent on older
   // firmware → undefined (honest: the channel does not exist yet).
   gensetRmsCurrent?: Measurement<number>;
+  // v1.7.0 [W12-2] — PZEM-004T real AC meter. Absent → undefined (no meter).
+  meter?: AcMeterMeasurement;
 }
 
 // ---------- EMERGENCY RELAY (v1.7.0 / firmware-generic ≥ 1.6.0) ----------
