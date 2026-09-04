@@ -22,5 +22,8 @@
         }
       ]
     }
-  ]
+  ],
+  "_audit9_note": "This is the LEGACY manifest for ESP Web Tools browser flashing. The CANONICAL OTA manifest (schema 2.0 with SHA-256 + Ed25519 signature) lives in the firmware repo's GitHub Release as manifest-canonical.json. PWA OTA code should fetch the canonical manifest from the GitHub Release URL, NOT from this file. This file is preserved only for first-install via browser (ESP Web Tools).",
+  "canonicalReleaseSource": "https://github.com/desvandi/PLTSMonitoring_Firmware-Backend/releases/latest",
+  "canonicalManifestPath": "modular-manifest-canonical.json"
 }
