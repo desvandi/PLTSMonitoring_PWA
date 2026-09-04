@@ -25,7 +25,8 @@ export type ViewKey =
   | "settings"
   | "ota"
   | "fleet"
-  | "emergency";
+  | "emergency"
+  | "relays";   // [v1.8.0] 8-channel relay control
 
 /** Daftar view valid — dipakai deep-link push-alarm (?view=alarms) agar
  *  parameter URL tidak bisa meng-inject nilai sembarangan ke state UI. */
@@ -47,6 +48,7 @@ export const VIEW_KEYS: readonly ViewKey[] = [
   "settings",
   "ota",
   "emergency",
+  "relays",
 ] as const;
 
 export function isViewKey(value: unknown): value is ViewKey {

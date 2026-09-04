@@ -31,6 +31,7 @@ export type CompatibilityStatus = {
   configSchemaVersion: number | null;
   message: string;
   canViewTelemetry: boolean;
+  canControlRelays: boolean;   // [v1.8.0] firmware ≥ 1.8.0 has 8-channel relay
 };
 
 function parseVersion(v: string): [number, number, number] | null {
@@ -66,6 +67,7 @@ export function evaluateCompatibility(
       configSchemaVersion: null,
       message: "Firmware version unknown — telemetry display disabled until verified.",
       canViewTelemetry: false,
+      canControlRelays: false,
     };
   }
   if (compareVersions(firmwareVersion, PWA_EXPECTED.firmwareMin) < 0) {
@@ -77,6 +79,7 @@ export function evaluateCompatibility(
       configSchemaVersion,
       message: `Firmware ${firmwareVersion} is too old. PWA requires ≥ ${PWA_EXPECTED.firmwareMin}.`,
       canViewTelemetry: false,
+      canControlRelays: false,
     };
   }
   if (PWA_EXPECTED.firmwareMax && compareVersions(firmwareVersion, PWA_EXPECTED.firmwareMax) > 0) {
@@ -88,6 +91,7 @@ export function evaluateCompatibility(
       configSchemaVersion,
       message: `Firmware ${firmwareVersion} is newer than this PWA supports.`,
       canViewTelemetry: false,
+      canControlRelays: false,
     };
   }
   if (protocolVersion !== null && protocolVersion !== PWA_EXPECTED.protocolVersion) {
@@ -99,6 +103,7 @@ export function evaluateCompatibility(
       configSchemaVersion,
       message: `Protocol mismatch: PWA expects ${PWA_EXPECTED.protocolVersion}, firmware reports ${protocolVersion}.`,
       canViewTelemetry: false,
+      canControlRelays: false,
     };
   }
   if (configSchemaVersion !== null && configSchemaVersion !== PWA_EXPECTED.configSchemaVersion) {
@@ -110,6 +115,7 @@ export function evaluateCompatibility(
       configSchemaVersion,
       message: `Config schema mismatch: PWA expects ${PWA_EXPECTED.configSchemaVersion}, firmware reports ${configSchemaVersion}.`,
       canViewTelemetry: false,
+      canControlRelays: false,
     };
   }
   return {
@@ -120,6 +126,7 @@ export function evaluateCompatibility(
     configSchemaVersion,
     message: "Firmware compatible — telemetry display enabled.",
     canViewTelemetry: true,
+      canControlRelays: true,
   };
 }
 
@@ -159,7 +166,8 @@ export function useCompatibility() {
           protocolVersion: null,
           configSchemaVersion: null,
           message: "Device unreachable — cannot verify firmware compatibility.",
-          canViewTelemetry: true, // optimistic: let user see error state
+          canViewTelemetry: true,
+      canControlRelays: true, // optimistic: let user see error state
         };
       }
     },

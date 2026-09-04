@@ -615,3 +615,76 @@ export type FactoryResetConfirmRequest = {
   token: string;
   confirm: 'RESET';
 };
+
+// ---------- 8-CHANNEL RELAY (v1.8.0) ----------
+
+export type RelayChannelId = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+export type RelayCommandState =
+  | 'COMMAND_PENDING'
+  | 'CONFIRMED_ON'
+  | 'CONFIRMED_OFF'
+  | 'TIMEOUT'
+  | 'FAILED'
+  | 'DEVICE_OFFLINE'
+  | 'UNKNOWN'
+  | 'STATE_DRIFT';
+
+export type RelayStateConfidence = 'SOFTWARE_ONLY' | 'VERIFIED' | 'UNKNOWN' | 'FAULT';
+
+export type RelaySource = 'OFF' | 'MANUAL' | 'SCHEDULE' | 'AUTOMATION' | 'SAFETY' | 'SYSTEM';
+
+export type RelayLockoutState = 'NORMAL' | 'TRIPPED' | 'ACKNOWLEDGED' | 'CLEARED' | 'ARMED';
+
+export interface RelayChannelStatus {
+  channel: RelayChannelId;
+  name: string;
+  desiredState: boolean;
+  reportedState: boolean;
+  physicalState: boolean | null;
+  stateConfidence: RelayStateConfidence;
+  fault: boolean;
+  lockoutState: RelayLockoutState;
+  source: RelaySource;
+  enabled: boolean;
+  lastChangedAt: number;
+  maxOnTimeForced: boolean;
+}
+
+export interface RelayStatusResponse {
+  channels: RelayChannelStatus[];
+  available: boolean;
+  channelCount: number;
+}
+
+export interface RelayCommandRequest {
+  channel: RelayChannelId;
+  action: 'on' | 'off' | 'pulse' | 'all_off' | 'acknowledge' | 'clear';
+  durationMs?: number;
+  source?: string;
+  requestId: string;
+}
+
+export interface RelayCommandResult {
+  ok: boolean;
+  result: 'EXECUTED' | 'BLOCKED' | 'REJECTED' | 'FAILED';
+  channel: number;
+  message: string;
+  transactionId: string;
+}
+
+export interface RelayChannelConfig {
+  name: string;
+  maxOnTimeSec: number;
+  minOnTimeSec: number;
+  minOffTimeSec: number;
+  minSwitchIntervalSec: number;
+  enabled: boolean;
+  interlockGroup: number;
+}
+
+// Extend SystemStatus with relay block (additive — absent in <= v1.7.x)
+export interface RelayTelemetryBlock {
+  relays?: RelayChannelStatus[];
+  relayAvailable?: boolean;
+}

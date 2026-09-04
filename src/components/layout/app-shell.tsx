@@ -74,7 +74,7 @@ const MOBILE_NAV: ViewKey[] = ['dashboard', 'battery', 'alarms', 'energy', 'sett
 // [PWA-02 REMEDIATION 2026-08] Operator-only views — mutating surfaces gated
 // by session role. A viewer-scoped MQTT session (broker subscription proves
 // READ identity only) cannot open config/calibration/OTA/settings.
-const OPERATOR_ONLY_VIEWS: ViewKey[] = ['calibration', 'config', 'ota', 'settings'];
+const OPERATOR_ONLY_VIEWS: ViewKey[] = ['calibration', 'config', 'ota', 'settings', 'relays'];
 
 export function AppShell({ children }: { children: ReactNode }) {
   const { currentView, setView } = useUiStore();

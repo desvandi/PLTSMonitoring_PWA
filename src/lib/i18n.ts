@@ -31,6 +31,7 @@ export type TranslationKey =
   | "nav.ota"
   | "nav.fleet"
   | "nav.emergency"
+  | "nav.relays"
   // Emergency control (v1.7.0 E-WAVE)
   | "emergency.title"
   | "emergency.no_device"
@@ -478,6 +479,7 @@ const id: Dict = {
   "nav.ota": "OTA Firmware",
   "nav.fleet": "Fleet",
   "nav.emergency": "Kontrol Darurat",
+  "nav.relays": "Relay 8-CH",
   "emergency.title": "Kontrol Darurat",
   "emergency.no_device": "Belum ada perangkat terdaftar. Buka Settings dan tambahkan URL GAS + token perangkat terlebih dahulu.",
   "emergency.state_run": "SISTEM RUN",
@@ -901,6 +903,7 @@ const en: Dict = {
   "nav.ota": "Firmware OTA",
   "nav.fleet": "Fleet",
   "nav.emergency": "Emergency Control",
+  "nav.relays": "Relay 8-CH",
   "emergency.title": "Emergency Control",
   "emergency.no_device": "No device registered yet. Open Settings and add the GAS URL + device token first.",
   "emergency.state_run": "SYSTEM RUN",

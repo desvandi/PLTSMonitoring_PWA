@@ -24,6 +24,9 @@ import type {
   Calibration,
   DeviceConfig,
   InsightsEnvelope,
+  RelayStatusResponse,
+  RelayCommandResult,
+  RelayChannelId,
 } from "@/lib/types";
 import { getCompatibilitySnapshot, IncompatibleFirmwareError } from "./compatibility";
 import { API_BASE_URL, ApiError, getCsrfToken, generateRequestId } from "./apiShared";
@@ -76,6 +79,15 @@ export interface DeviceApiClient {
   changePassword: (current: string, next: string) => Promise<{ changed: boolean }>;
   exportConfig: () => Promise<{ config: SystemConfig }>;
   importConfig: (cfg: SystemConfig) => Promise<{ imported: boolean }>;
+
+  // ---------- 8-Channel Relay (v1.8.0) ----------
+  relayStatus: () => Promise<RelayStatusResponse>;
+  relayOn: (channel: RelayChannelId) => Promise<RelayCommandResult>;
+  relayOff: (channel: RelayChannelId) => Promise<RelayCommandResult>;
+  relayPulse: (channel: RelayChannelId, durationMs: number) => Promise<RelayCommandResult>;
+  relayAllOff: () => Promise<RelayCommandResult>;
+  relayAcknowledge: (channel: RelayChannelId) => Promise<RelayCommandResult>;
+  relayClear: (channel: RelayChannelId) => Promise<RelayCommandResult>;
 }
 
 async function deviceRequest<T>(
@@ -256,4 +268,40 @@ export const deviceApi: DeviceApiClient = {
   exportConfig: () => deviceRequest<{ config: SystemConfig }>("/api/config/export"),
   importConfig: (cfg) =>
     deviceRequest<{ imported: boolean }>("/api/config/import", { method: "POST", body: cfg }),
+
+  // ---------- 8-Channel Relay (v1.8.0) ----------
+  // [Brief §6] All relay mutations use IDEMPOTENT_STATE (on/off), NOT toggle.
+  // Each command carries requestId for tracking + dedup on firmware side.
+  // TIMEOUT on PWA side → UNKNOWN state (NOT FAILED) — reconcile after reconnect.
+  relayStatus: () => deviceRequest<RelayStatusResponse>("/api/relays"),
+  relayOn: (channel) =>
+    deviceRequest<RelayCommandResult>(`/api/relays/${channel}/on`, {
+      method: "POST",
+      body: { requestId: generateRequestId(), source: "MANUAL" },
+    }),
+  relayOff: (channel) =>
+    deviceRequest<RelayCommandResult>(`/api/relays/${channel}/off`, {
+      method: "POST",
+      body: { requestId: generateRequestId(), source: "MANUAL" },
+    }),
+  relayPulse: (channel, durationMs) =>
+    deviceRequest<RelayCommandResult>(`/api/relays/${channel}/pulse`, {
+      method: "POST",
+      body: { requestId: generateRequestId(), source: "MANUAL", durationMs },
+    }),
+  relayAllOff: () =>
+    deviceRequest<RelayCommandResult>("/api/relays/all_off", {
+      method: "POST",
+      body: { requestId: generateRequestId(), source: "MANUAL" },
+    }),
+  relayAcknowledge: (channel) =>
+    deviceRequest<RelayCommandResult>(`/api/relays/${channel}/acknowledge`, {
+      method: "POST",
+      body: { requestId: generateRequestId() },
+    }),
+  relayClear: (channel) =>
+    deviceRequest<RelayCommandResult>(`/api/relays/${channel}/clear`, {
+      method: "POST",
+      body: { requestId: generateRequestId() },
+    }),
 };

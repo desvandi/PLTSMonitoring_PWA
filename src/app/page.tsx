@@ -21,6 +21,7 @@ import { AiView } from '@/components/ai/ai-view';
 import { SettingsView } from '@/components/settings/settings-view';
 import { OtaView } from '@/components/ota/ota-view';
 import { EmergencyControlView } from '@/components/emergency/emergency-control-view';
+import { RelayControlView } from '@/components/relays/relay-control-view';
 import { Loader2 } from 'lucide-react';
 
 export default function Home() {
@@ -61,6 +62,7 @@ export default function Home() {
       {currentView === 'settings' && <SettingsView />}
       {currentView === 'ota' && <OtaView />}
       {currentView === 'emergency' && <EmergencyControlView />}
+      {currentView === 'relays' && <RelayControlView />}
     </AppShell>
   );
 }
