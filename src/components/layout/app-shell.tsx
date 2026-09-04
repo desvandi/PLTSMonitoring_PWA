@@ -31,6 +31,7 @@ import {
   Server,
   Cloud,
   ShieldAlert,
+  Power,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -52,6 +53,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'dashboard', icon: LayoutDashboard },
   { key: 'fleet', icon: Server },
   { key: 'emergency', icon: ShieldAlert },
+  { key: 'relays', icon: Power },
   { key: 'battery', icon: Battery },
   { key: 'ac', icon: Zap },
   { key: 'environment', icon: Thermometer },

@@ -126,8 +126,21 @@ export function evaluateCompatibility(
     configSchemaVersion,
     message: "Firmware compatible — telemetry display enabled.",
     canViewTelemetry: true,
-      canControlRelays: true,
+    // [self-review fix] canControlRelays = true ONLY if firmware ≥ 1.8.0
+    // (8-channel relay support was added in v1.8.0). Older firmware does
+    // not have /api/relays endpoint — the relay view must be hidden.
+    canControlRelays: _firmwareSupportsRelays(parseVersion(firmwareVersion)),
   };
+}
+
+/** [self-review fix] Check if firmware version supports 8-channel relay. */
+function _firmwareSupportsRelays(fwVer: [number, number, number] | null): boolean {
+  if (!fwVer) return false;
+  const [major, minor] = fwVer;
+  // v1.8.0+ has relay support (PCF8574 I²C expander, /api/relays endpoint)
+  if (major > 1) return true;
+  if (major === 1 && minor >= 8) return true;
+  return false;
 }
 
 export class IncompatibleFirmwareError extends Error {
@@ -167,7 +180,7 @@ export function useCompatibility() {
           configSchemaVersion: null,
           message: "Device unreachable — cannot verify firmware compatibility.",
           canViewTelemetry: true,
-      canControlRelays: true, // optimistic: let user see error state
+      canControlRelays: false, // [self-review] can't verify — hide relay view
         };
       }
     },

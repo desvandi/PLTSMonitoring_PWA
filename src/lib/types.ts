@@ -444,6 +444,10 @@ export interface SystemStatus {
   // v1.7.0 [E-WAVE] — emergency relay block (undefined on older firmware —
   // the UI renders an honest "tidak diketahui", never a fabricated RUN).
   emergency?: EmergencyStatus;
+  // v1.8.0 [8-Channel Relay] — relay block (undefined on older firmware —
+  // the PWA compatibility gate hides the relay view when absent).
+  relays?: RelayChannelStatus[];
+  relayAvailable?: boolean;
   // Convenience: serializes the device online state for the UI shell.
   online: boolean;
   // [P0-006 REMEDIATION 2026-08] Explicit simulation marker: true ONLY when

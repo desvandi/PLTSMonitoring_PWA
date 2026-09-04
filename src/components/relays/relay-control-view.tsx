@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { deviceApi } from "@/lib/deviceApi";
+import { getCompatibilitySnapshot } from "@/lib/compatibility";
 import type { RelayChannelStatus, RelayCommandState } from "@/lib/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -255,10 +256,17 @@ function RelayChannelCard({ channel, status }: { channel: number; status: RelayC
 }
 
 export function RelayControlView() {
+  // [self-review fix] Check compatibility before fetching — if firmware
+  // doesn't support 8-channel relay (v1.7.x or older), show honest message
+  // instead of getting a 404 error.
+  const compat = getCompatibilitySnapshot();
+
   const { data, isLoading, isError } = useQuery({
     queryKey: ["relayStatus"],
     queryFn: () => deviceApi.relayStatus(),
     refetchInterval: 3000,
+    // Skip the query if firmware doesn't support relays
+    enabled: compat ? compat.canControlRelays : false,
   });
 
   const qc = useQueryClient();
@@ -269,6 +277,27 @@ export function RelayControlView() {
       qc.invalidateQueries({ queryKey: ["relayStatus"] });
     },
   });
+
+  // Compatibility gate — honest "not supported" message
+  if (compat && !compat.canControlRelays) {
+    return (
+      <Card>
+        <CardContent className="p-6">
+          <div className="flex items-center gap-2 text-amber-600">
+            <AlertTriangle className="h-5 w-5" />
+            <div>
+              <p className="font-medium">8-Channel Relay not available</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                Firmware version {compat.firmwareVersion ?? "unknown"} does not
+                support 8-channel relay control. Requires firmware v1.8.0 or later
+                with PCF8574 I²C expander.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   if (isLoading) {
     return (
