@@ -21,6 +21,7 @@
 import { useState, useRef } from 'react';
 import { api } from '@/lib/api';
 import { readSysConfig } from '@/lib/sysConfig';
+import { getCanonicalRelease, type CanonicalRelease } from '@/lib/release-identity';
 import { useLanguage } from '@/components/providers/language-provider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -117,6 +118,101 @@ export function OtaView() {
 
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [canonicalRelease, setCanonicalRelease] = useState<CanonicalRelease | null>(null);
+  const [canonicalLoading, setCanonicalLoading] = useState(false);
+  const [canonicalError, setCanonicalError] = useState<string | null>(null);
+  const [pushingCanonical, setPushingCanonical] = useState(false);
+  const [pushProgress, setPushProgress] = useState<number | null>(null);
+  const [pushStatus, setPushStatus] = useState<string | null>(null);
+
+  // Fetch canonical release identity from GitHub Releases API
+  const fetchCanonicalRelease = async () => {
+    setCanonicalLoading(true);
+    setCanonicalError(null);
+    try {
+      const rel = await getCanonicalRelease();
+      if (!rel) {
+        setCanonicalError('Could not fetch canonical release from GitHub');
+      } else {
+        setCanonicalRelease(rel);
+      }
+    } catch (e) {
+      setCanonicalError(e instanceof Error ? e.message : 'Unknown error');
+    } finally {
+      setCanonicalLoading(false);
+    }
+  };
+
+  // [Audit 2026-09-04] Push canonical release to device:
+  // 1. Fetch canonical release identity (version, SHA, release URL)
+  // 2. Download modular-firmware.bin from GitHub Release
+  // 3. Download modular-firmware.bin.sig (Ed25519 hex signature)
+  // 4. Compute SHA-256 client-side, verify against canonical release
+  // 5. Upload to device with X-Expected-SHA256 + X-Signature + X-Firmware-Version
+  const handlePushCanonical = async () => {
+    if (!canonicalRelease) {
+      toast.error('Canonical release not loaded');
+      return;
+    }
+    setPushingCanonical(true);
+    setPushProgress(0);
+    setPushStatus('Downloading firmware from GitHub Release…');
+    try {
+      // 1. Download firmware binary
+      const binUrl = canonicalRelease.releaseUrl.replace(
+        '/releases/tag/',
+        '/releases/download/',
+      ) + '/modular-firmware.bin';
+      const binResp = await fetch(binUrl);
+      if (!binResp.ok) throw new Error(`Download failed: HTTP ${binResp.status}`);
+      const binBlob = await binResp.blob();
+
+      // 2. Download Ed25519 signature (hex text, 128 chars)
+      const sigUrl = canonicalRelease.releaseUrl.replace(
+        '/releases/tag/',
+        '/releases/download/',
+      ) + '/modular-firmware.bin.sig';
+      const sigResp = await fetch(sigUrl);
+      if (!sigResp.ok) throw new Error(`Signature download failed: HTTP ${sigResp.status}`);
+      const signature = (await sigResp.text()).trim();
+
+      // 3. Compute SHA-256 client-side
+      setPushStatus('Computing SHA-256…');
+      const arrayBuf = await binBlob.arrayBuffer();
+      const hashBuf = await crypto.subtle.digest('SHA-256', arrayBuf);
+      const hashHex = Array.from(new Uint8Array(hashBuf))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+
+      // 4. Verify SHA matches canonical release
+      if (hashHex !== canonicalRelease.firmwareSha256) {
+        throw new Error(
+          `SHA-256 mismatch: computed ${hashHex.slice(0, 16)}… != expected ${canonicalRelease.firmwareSha256.slice(0, 16)}…`,
+        );
+      }
+
+      // 5. Upload to device with production OTA headers
+      setPushStatus(`Uploading v${canonicalRelease.version} to device…`);
+      const file = new File([binBlob], 'modular-firmware.bin', { type: 'application/octet-stream' });
+      const result = await api.otaUpload(file, (pct) => setPushProgress(pct), {
+        sha256: hashHex,
+        signature,
+        version: canonicalRelease.version,
+      });
+
+      toast.success(`OTA complete: device now running v${result.newVersion ?? canonicalRelease.version}`);
+      qc.invalidateQueries({ queryKey: ['version'] });
+      qc.invalidateQueries({ queryKey: ['ota-history'] });
+      setPushStatus(`Device updated to v${result.newVersion ?? canonicalRelease.version}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      toast.error(`Canonical OTA failed: ${msg}`);
+      setPushStatus(`Failed: ${msg}`);
+    } finally {
+      setPushingCanonical(false);
+      setPushProgress(null);
+    }
+  };
 
   // Fetch version info (live)
   const { data: versionData, isLoading: versionLoading } = useQuery({
@@ -336,6 +432,101 @@ export function OtaView() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Push Canonical Release — production OTA flow */}
+      {/* [Audit 2026-09-04] This card implements the production OTA path:
+          fetch canonical release → download binary + sig → verify SHA →
+          upload with X-Expected-SHA256/X-Signature/X-Firmware-Version headers.
+          The manual upload card above is for development; this card is for
+          fleet OTA from the immutable GitHub Release. */}
+      <Card className="border-primary/30 bg-primary/5">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Shield className="w-4 h-4 text-primary" />
+            Push Canonical Release (Production OTA)
+          </CardTitle>
+          <CardDescription className="text-xs">
+            Fetches the latest signed firmware from the GitHub Release, verifies
+            SHA-256 client-side, and pushes to the device with Ed25519 signature
+            headers. This is the production OTA path — the device verifies both
+            SHA-256 and Ed25519 signature before flashing.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {!canonicalRelease && !canonicalLoading && !canonicalError && (
+            <Button variant="default" size="sm" onClick={fetchCanonicalRelease}>
+              <Download className="w-3 h-3 mr-1" />
+              Fetch Latest Release
+            </Button>
+          )}
+          {canonicalLoading && (
+            <p className="text-xs text-muted-foreground">Fetching release info…</p>
+          )}
+          {canonicalError && (
+            <div className="space-y-2">
+              <p className="text-xs text-status-error">{canonicalError}</p>
+              <Button variant="outline" size="sm" onClick={fetchCanonicalRelease}>
+                Retry
+              </Button>
+            </div>
+          )}
+          {canonicalRelease && (
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <span className="text-muted-foreground">Version:</span>{' '}
+                  <span className="font-mono font-semibold">v{canonicalRelease.version}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Build:</span>{' '}
+                  <span className="font-mono text-[10px]">{canonicalRelease.releaseId}</span>
+                </div>
+                <div className="col-span-2">
+                  <span className="text-muted-foreground">SHA-256:</span>{' '}
+                  <span className="font-mono text-[10px] break-all">
+                    {canonicalRelease.firmwareSha256.slice(0, 32)}…
+                  </span>
+                </div>
+                <div className="col-span-2">
+                  <span className="text-muted-foreground">Git commit:</span>{' '}
+                  <span className="font-mono text-[10px]">
+                    {canonicalRelease.gitCommit.slice(0, 12)}
+                  </span>
+                </div>
+              </div>
+              <Button
+                variant="default"
+                size="sm"
+                disabled={pushingCanonical || uploading}
+                onClick={handlePushCanonical}
+              >
+                <Upload className="w-3 h-3 mr-1" />
+                {pushingCanonical ? 'Pushing…' : `Push v${canonicalRelease.version} to Device`}
+              </Button>
+              {pushProgress != null && (
+                <div className="space-y-1">
+                  <Progress value={pushProgress} className="h-2" />
+                  <p className="text-[10px] text-muted-foreground text-center">{pushProgress}%</p>
+                </div>
+              )}
+              {pushStatus && (
+                <p className="text-[10px] text-muted-foreground">{pushStatus}</p>
+              )}
+              <p className="text-[10px] text-muted-foreground">
+                Release URL:{' '}
+                <a
+                  href={canonicalRelease.releaseUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline"
+                >
+                  {canonicalRelease.releaseUrl}
+                </a>
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* History table */}
       <Card className="border-border/60">
