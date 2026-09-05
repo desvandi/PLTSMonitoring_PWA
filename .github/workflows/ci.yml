@@ -2,7 +2,12 @@ name: ci
 
 # ============================================================================
 # P1-1 AUDIT 2026-09 — PWA CI workflow (was entirely missing).
-# Every push/PR to main MUST pass: lint + typecheck + test + build.
+# Every push/PR to main MUST pass: frozen install + lint + typecheck + test +
+# production build.
+# [PWA-10/PWA-11 AUDIT 2026-09-05] `lockfile-integrity` makes the frozen
+# dependency install an EXPLICIT, named gate: `npm ci` fails when
+# package-lock.json drifts from package.json, so dependency resolution is
+# reproducible and every job installs from the SAME frozen lockfile.
 # Cross-repo contract check (firmware schema vs PWA types) runs as a
 # separate job so a schema drift fails the gate even if local PWA tests pass.
 # ============================================================================
@@ -45,6 +50,26 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
 
+  # --------------------------------------------------------------------------
+  # [PWA-10/PWA-11 AUDIT 2026-09-05] Frozen dependency install as an explicit,
+  # named, MANDATORY gate. `npm ci` = frozen install: it refuses to run when
+  # package-lock.json is out of sync with package.json and never rewrites
+  # the lockfile — dependency reproducibility for the PWA build.
+  # --------------------------------------------------------------------------
+  lockfile-integrity:
+    name: Frozen dependency install (npm ci)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Frozen install — fails if lockfile is out of sync with package.json
+        run: npm ci
+      - name: Lockfile is tracked and unchanged by install
+        run: git diff --exit-code --stat package-lock.json
+
   test:
     name: Vitest unit tests
     runs-on: ubuntu-latest
@@ -60,7 +85,7 @@ jobs:
   build:
     name: Next.js production build
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test]
+    needs: [lint, typecheck, test, lockfile-integrity]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

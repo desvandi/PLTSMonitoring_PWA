@@ -154,6 +154,33 @@ async function deviceRequest<T>(
   return json.data;
 }
 
+/**
+ * [Audit 2026-09-05 · P1 PWA-03] Defense-in-depth for ACTUATOR mutations.
+ *
+ * The UI gates relay controls behind `canControlRelays`, but the command
+ * layer must enforce the same policy independently — a caller that bypasses
+ * UI gating (script, console, future code path) still cannot reach the relay
+ * endpoints unless compatibility was VERIFIED and relays are supported.
+ *
+ * Fail-closed on BOTH:
+ *   - compatibility snapshot missing  (never verified → BLOCKED)
+ *   - canControlRelays === false      (firmware <1.8.0 or unknown → BLOCKED)
+ */
+function assertRelayCommandAllowed(): void {
+  const compat = getCompatibilitySnapshot();
+  if (!compat) {
+    throw new IncompatibleFirmwareError(
+      "Relay command BLOCKED (fail-closed): firmware compatibility has not been " +
+        "verified yet. Wait for the /api/version check to complete, then retry.",
+    );
+  }
+  if (!compat.canControlRelays) {
+    throw new IncompatibleFirmwareError(
+      `Relay command BLOCKED: ${compat.message}`,
+    );
+  }
+}
+
 export const deviceApi: DeviceApiClient = {
   status:      () => deviceRequest<SystemStatus>("/api/status"),
   version:     () => deviceRequest<FirmwareInfo>("/api/version"),
@@ -295,34 +322,51 @@ export const deviceApi: DeviceApiClient = {
   // Each command carries requestId for tracking + dedup on firmware side.
   // TIMEOUT on PWA side → UNKNOWN state (NOT FAILED) — reconcile after reconnect.
   relayStatus: () => deviceRequest<RelayStatusResponse>("/api/relays"),
-  relayOn: (channel) =>
-    deviceRequest<RelayCommandResult>(`/api/relays/${channel}/on`, {
+  // [P1 PWA-03] Every relay mutation passes through assertRelayCommandAllowed()
+  // BEFORE the POST — command-layer enforcement, not just UI gating.
+  // NOTE: relay mutations are `async` so the guard's throw surfaces as a
+  // REJECTED promise (not a synchronous exception) — safe for every caller
+  // style (useMutation, plain await, .catch()).
+  relayOn: async (channel) => {
+    assertRelayCommandAllowed();
+    return deviceRequest<RelayCommandResult>(`/api/relays/${channel}/on`, {
       method: "POST",
       body: { requestId: generateRequestId(), source: "MANUAL" },
-    }),
-  relayOff: (channel) =>
-    deviceRequest<RelayCommandResult>(`/api/relays/${channel}/off`, {
+    });
+  },
+  relayOff: async (channel) => {
+    assertRelayCommandAllowed();
+    return deviceRequest<RelayCommandResult>(`/api/relays/${channel}/off`, {
       method: "POST",
       body: { requestId: generateRequestId(), source: "MANUAL" },
-    }),
-  relayPulse: (channel, durationMs) =>
-    deviceRequest<RelayCommandResult>(`/api/relays/${channel}/pulse`, {
+    });
+  },
+  relayPulse: async (channel, durationMs) => {
+    assertRelayCommandAllowed();
+    return deviceRequest<RelayCommandResult>(`/api/relays/${channel}/pulse`, {
       method: "POST",
       body: { requestId: generateRequestId(), source: "MANUAL", durationMs },
-    }),
-  relayAllOff: () =>
-    deviceRequest<RelayCommandResult>("/api/relays/all_off", {
+    });
+  },
+  relayAllOff: async () => {
+    assertRelayCommandAllowed();
+    return deviceRequest<RelayCommandResult>("/api/relays/all_off", {
       method: "POST",
       body: { requestId: generateRequestId(), source: "MANUAL" },
-    }),
-  relayAcknowledge: (channel) =>
-    deviceRequest<RelayCommandResult>(`/api/relays/${channel}/acknowledge`, {
+    });
+  },
+  relayAcknowledge: async (channel) => {
+    assertRelayCommandAllowed();
+    return deviceRequest<RelayCommandResult>(`/api/relays/${channel}/acknowledge`, {
       method: "POST",
       body: { requestId: generateRequestId() },
-    }),
-  relayClear: (channel) =>
-    deviceRequest<RelayCommandResult>(`/api/relays/${channel}/clear`, {
+    });
+  },
+  relayClear: async (channel) => {
+    assertRelayCommandAllowed();
+    return deviceRequest<RelayCommandResult>(`/api/relays/${channel}/clear`, {
       method: "POST",
       body: { requestId: generateRequestId() },
-    }),
+    });
+  },
 };

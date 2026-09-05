@@ -29,7 +29,19 @@ export interface BackendApiClient {
   // These come from GAS, not the ESP32. A single device only knows its own
   // current firmware; the backend knows the fleet's OTA history.
   otaHistory: () => Promise<{ entries: OtaHistoryEntry[] }>;
-  otaCheck: () => Promise<{ available: boolean; latestVersion: string | null }>;
+  // [P0 PWA-01] otaCheck now reports the AUTHORIZED-release policy state:
+  // expectedTag (pinned, immutable), latestTag (observability only),
+  // latestMismatch (true = GitHub "latest" differs — PWA must warn, never
+  // flash latest), and blockedReason when the authorized release cannot be
+  // established (fail-closed).
+  otaCheck: () => Promise<{
+    available: boolean;
+    latestVersion: string | null;
+    expectedTag?: string;
+    latestTag?: string | null;
+    latestMismatch?: boolean;
+    blockedReason?: string;
+  }>;
 }
 
 async function backendRequest<T>(
@@ -96,7 +108,14 @@ export const backendApi: BackendApiClient = {
 
   otaHistory: () => backendRequest<{ entries: OtaHistoryEntry[] }>("/api/ota/history"),
   otaCheck: () =>
-    backendRequest<{ available: boolean; latestVersion: string | null }>("/api/ota/check", {
+    backendRequest<{
+      available: boolean;
+      latestVersion: string | null;
+      expectedTag?: string;
+      latestTag?: string | null;
+      latestMismatch?: boolean;
+      blockedReason?: string;
+    }>("/api/ota/check", {
       method: "POST",
     }),
 };

@@ -21,7 +21,12 @@
 import { useState, useRef } from 'react';
 import { api } from '@/lib/api';
 import { readSysConfig } from '@/lib/sysConfig';
-import { getCanonicalRelease, type CanonicalRelease } from '@/lib/release-identity';
+import {
+  resolveAuthorizedRelease,
+  EXPECTED_FIRMWARE_TAG,
+  type ReleaseResolution,
+  type CanonicalRelease,
+} from '@/lib/release-identity';
 import { useLanguage } from '@/components/providers/language-provider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -119,25 +124,34 @@ export function OtaView() {
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
   const [canonicalRelease, setCanonicalRelease] = useState<CanonicalRelease | null>(null);
+  // [P0 PWA-01 FIX] Full resolution result (ok / fail-closed reason), so the
+  // UI can show WHY the authorized release is unavailable instead of a
+  // generic error — and never silently fall back to `releases/latest`.
+  const [canonicalResult, setCanonicalResult] = useState<ReleaseResolution | null>(null);
   const [canonicalLoading, setCanonicalLoading] = useState(false);
-  const [canonicalError, setCanonicalError] = useState<string | null>(null);
   const [pushingCanonical, setPushingCanonical] = useState(false);
   const [pushProgress, setPushProgress] = useState<number | null>(null);
   const [pushStatus, setPushStatus] = useState<string | null>(null);
 
-  // Fetch canonical release identity from GitHub Releases API
+  // [P0 PWA-01 FIX] Resolve the AUTHORIZED release by immutable tag
+  // (EXPECTED_FIRMWARE_TAG) — never from the mutable `releases/latest`
+  // pointer. Fail-closed when the authorized release is not published or
+  // fails manifest policy validation.
   const fetchCanonicalRelease = async () => {
     setCanonicalLoading(true);
-    setCanonicalError(null);
     try {
-      const rel = await getCanonicalRelease();
-      if (!rel) {
-        setCanonicalError('Could not fetch canonical release from GitHub');
-      } else {
-        setCanonicalRelease(rel);
-      }
+      const res = await resolveAuthorizedRelease();
+      setCanonicalResult(res);
+      setCanonicalRelease(res.ok ? res.release : null);
     } catch (e) {
-      setCanonicalError(e instanceof Error ? e.message : 'Unknown error');
+      setCanonicalResult({
+        ok: false,
+        code: 'GITHUB_API_UNREACHABLE',
+        message: e instanceof Error ? e.message : 'Unknown error',
+        expectedTag: EXPECTED_FIRMWARE_TAG,
+        latestTag: null,
+      });
+      setCanonicalRelease(null);
     } finally {
       setCanonicalLoading(false);
     }
@@ -156,23 +170,17 @@ export function OtaView() {
     }
     setPushingCanonical(true);
     setPushProgress(0);
-    setPushStatus('Downloading firmware from GitHub Release…');
+    setPushStatus(`Resolving authorized release ${EXPECTED_FIRMWARE_TAG}…`);
     try {
-      // 1. Download firmware binary
-      const binUrl = canonicalRelease.releaseUrl.replace(
-        '/releases/tag/',
-        '/releases/download/',
-      ) + '/modular-firmware.bin';
-      const binResp = await fetch(binUrl);
+      // 1. Download firmware binary from the AUTHORIZED release assets
+      //    (asset URLs validated present by resolveAuthorizedRelease — no
+      //    URL guessing from the mutable "latest" pointer).
+      const binResp = await fetch(canonicalRelease.firmwareUrl);
       if (!binResp.ok) throw new Error(`Download failed: HTTP ${binResp.status}`);
       const binBlob = await binResp.blob();
 
       // 2. Download Ed25519 signature (hex text, 128 chars)
-      const sigUrl = canonicalRelease.releaseUrl.replace(
-        '/releases/tag/',
-        '/releases/download/',
-      ) + '/modular-firmware.bin.sig';
-      const sigResp = await fetch(sigUrl);
+      const sigResp = await fetch(canonicalRelease.signatureUrl);
       if (!sigResp.ok) throw new Error(`Signature download failed: HTTP ${sigResp.status}`);
       const signature = (await sigResp.text()).trim();
 
@@ -184,10 +192,29 @@ export function OtaView() {
         .map((b) => b.toString(16).padStart(2, '0'))
         .join('');
 
-      // 4. Verify SHA matches canonical release
+      // 4. Verify SHA matches the authorized release
       if (hashHex !== canonicalRelease.firmwareSha256) {
         throw new Error(
           `SHA-256 mismatch: computed ${hashHex.slice(0, 16)}… != expected ${canonicalRelease.firmwareSha256.slice(0, 16)}…`,
+        );
+      }
+
+      // [Audit 2026-09-05 hardening] Validate delivery metadata BEFORE upload:
+      // Ed25519 signature = 64 bytes hex (128 chars), SHA-256 = 64 hex chars,
+      // firmware version = strict SemVer. Malformed values fail HERE — they
+      // never reach the device (firmware would reject them anyway; failing
+      // earlier gives the operator an actionable message).
+      if (!/^[0-9a-f]{128}$/i.test(signature)) {
+        throw new Error(
+          `Invalid signature format: expected 128 hex chars (Ed25519 over 32-byte digest), got ${signature.length} chars`,
+        );
+      }
+      if (!/^[0-9a-f]{64}$/i.test(hashHex)) {
+        throw new Error('Internal error: computed SHA-256 has invalid hex format');
+      }
+      if (!/^\d+\.\d+\.\d+$/.test(canonicalRelease.version)) {
+        throw new Error(
+          `Invalid firmware version format: "${canonicalRelease.version}" is not SemVer`,
         );
       }
 
@@ -222,18 +249,24 @@ export function OtaView() {
   });
 
   // Fetch OTA history — [W13-3] real GAS OTA_LOG first (device-reported
-  // lifecycle events), mock fallback when GAS is unconfigured/unreachable.
+  // lifecycle events), fallback when GAS is unconfigured/unreachable.
+  // [P1 PWA-09 FIX] The data source is part of the query result so the UI can
+  // label AUTHORITATIVE history (GAS OTA_LOG, system-of-record) distinctly
+  // from FALLBACK history (device/local store — operationally useful, NOT
+  // audit-grade). Operators must never mistake fallback for audit history.
   const { data: historyData, isLoading: historyLoading } = useQuery({
     queryKey: ['ota-history'],
-    queryFn: async (): Promise<{ entries: OtaHistoryEntry[] }> => {
+    queryFn: async (): Promise<{ entries: OtaHistoryEntry[]; source: 'gas' | 'fallback' }> => {
       const config = readSysConfig();
       const deviceId = config?.active_device_id ?? config?.device_id ?? '';
       const gasEntries = await fetchGasOtaHistory(deviceId);
-      if (gasEntries) return { entries: gasEntries };
-      return api.otaHistory();
+      if (gasEntries) return { entries: gasEntries, source: 'gas' };
+      const r = await api.otaHistory();
+      return { entries: r.entries, source: 'fallback' };
     },
     staleTime: 30_000,
   });
+  const historySource = historyData?.source ?? 'fallback';
 
   const version: FirmwareInfo | undefined = versionData; // already unwrapped
   const history: OtaHistoryEntry[] = historyData?.entries ?? [];
@@ -243,9 +276,14 @@ export function OtaView() {
     try {
       const r = await api.otaCheck();
       if (r.available) {
-        toast.success(`Update available: ${r.latestVersion}`);
+        toast.success(
+          `Authorized firmware available: v${r.latestVersion}` +
+            (r.latestMismatch
+              ? ` (GitHub "latest" is ${r.latestTag} — PWA pins to the authorized release)`
+              : ''),
+        );
       } else {
-        toast.info('Firmware is up to date');
+        toast.info(`No usable authorized release: ${r.blockedReason ?? 'not resolvable'}`);
       }
       qc.invalidateQueries({ queryKey: ['version'] });
     } catch (e) {
@@ -446,35 +484,58 @@ export function OtaView() {
             Push Canonical Release (Production OTA)
           </CardTitle>
           <CardDescription className="text-xs">
-            Fetches the latest signed firmware from the GitHub Release, verifies
-            SHA-256 client-side, and pushes to the device with Ed25519 signature
-            headers. This is the production OTA path — the device verifies both
-            SHA-256 and Ed25519 signature before flashing.
+            [P0 fix 2026-09-05] Resolves the AUTHORIZED release by immutable tag
+            ({EXPECTED_FIRMWARE_TAG}) — never the mutable GitHub “latest”
+            pointer — verifies SHA-256 client-side, and pushes to the device
+            with Ed25519 signature headers. This is the production OTA path —
+            the device verifies both SHA-256 and Ed25519 signature before
+            flashing.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {!canonicalRelease && !canonicalLoading && !canonicalError && (
+          {/* [P0 PWA-01] The card resolves the AUTHORIZED release (pinned tag),
+              never the mutable `releases/latest` pointer. */}
+          {!canonicalResult && !canonicalLoading && (
             <Button variant="default" size="sm" onClick={fetchCanonicalRelease}>
               <Download className="w-3 h-3 mr-1" />
-              Fetch Latest Release
+              Fetch Authorized Release ({EXPECTED_FIRMWARE_TAG})
             </Button>
           )}
           {canonicalLoading && (
-            <p className="text-xs text-muted-foreground">Fetching release info…</p>
+            <p className="text-xs text-muted-foreground">
+              Resolving authorized release {EXPECTED_FIRMWARE_TAG} (by immutable tag)…
+            </p>
           )}
-          {canonicalError && (
+          {canonicalResult && !canonicalResult.ok && (
             <div className="space-y-2">
-              <p className="text-xs text-status-error">{canonicalError}</p>
+              <p className="text-xs text-status-error">{canonicalResult.message}</p>
+              <p className="text-[10px] text-muted-foreground">
+                Fail-closed policy: this PWA never flashes GitHub&nbsp;“latest”
+                {canonicalResult.latestTag ? ` (currently ${canonicalResult.latestTag})` : ''}{' '}
+                when it is not the authorized release. Production OTA stays blocked
+                until the authorized release exists.
+              </p>
               <Button variant="outline" size="sm" onClick={fetchCanonicalRelease}>
                 Retry
               </Button>
+            </div>
+          )}
+          {canonicalResult?.ok === true && canonicalRelease?.latestMismatch && (
+            <div className="flex items-start gap-2 text-xs text-status-warn">
+              <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+              <span>
+                GitHub&nbsp;“latest” is <span className="font-mono">{canonicalRelease.latestTag}</span>,
+                not the authorized release{' '}
+                <span className="font-mono">{canonicalRelease.expectedTag}</span>. The PWA pins
+                to the authorized release — it will NOT flash “latest”.
+              </span>
             </div>
           )}
           {canonicalRelease && (
             <div className="space-y-2">
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div>
-                  <span className="text-muted-foreground">Version:</span>{' '}
+                  <span className="text-muted-foreground">Authorized version:</span>{' '}
                   <span className="font-mono font-semibold">v{canonicalRelease.version}</span>
                 </div>
                 <div>
@@ -530,11 +591,30 @@ export function OtaView() {
 
       {/* History table */}
       <Card className="border-border/60">
-        <CardHeader className="pb-2">
+        <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-sm flex items-center gap-2">
             <History className="w-4 h-4 text-primary" />
             {t('ota.history')}
           </CardTitle>
+          {/* [P1 PWA-09] Authoritative (GAS OTA_LOG, system-of-record) vs
+              fallback (device/local store — NOT audit-grade). */}
+          {historySource === 'gas' ? (
+            <Badge
+              variant="outline"
+              className="text-[9px] px-1.5 h-4 border-status-on/30 text-status-on"
+              title="System-of-record: device-reported OTA lifecycle events from the GAS OTA_LOG sheet."
+            >
+              Authoritative — GAS OTA_LOG
+            </Badge>
+          ) : (
+            <Badge
+              variant="outline"
+              className="text-[9px] px-1.5 h-4 border-status-warn/30 text-status-warn"
+              title="GAS OTA_LOG unavailable (unconfigured or unreachable). This is device/local fallback history — NOT audit-grade centralized history."
+            >
+              Fallback — device/local (not audit-grade)
+            </Badge>
+          )}
         </CardHeader>
         <CardContent>
           {history.length === 0 ? (

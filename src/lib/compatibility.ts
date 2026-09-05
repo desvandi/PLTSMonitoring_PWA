@@ -7,7 +7,11 @@
 // =============================================================================
 
 import { useQuery } from "@tanstack/react-query";
-import { api } from "./api";
+// NOTE: `./api` is imported DYNAMICALLY inside the queryFn to break the
+// static import cycle  api.ts → deviceApi.ts → compatibility.ts → api.ts.
+// When a consumer imports deviceApi (or this module) directly, the cycle
+// would otherwise evaluate api.ts while deviceApi is still uninitialized
+// (api.ts reads `deviceApi.voltageCalibrationPoint` at module-init time).
 
 export const PWA_EXPECTED = {
   pwaVersion: "1.0.0",
@@ -160,11 +164,38 @@ export function getCompatibilitySnapshot(): CompatibilityStatus | null {
   return _compatibilitySnapshot;
 }
 
+/**
+ * [Audit 2026-09-05 · P0 PWA-02] Status returned when the device cannot be
+ * reached — compatibility is UNVERIFIED, which MUST be represented as a
+ * fail-closed state: telemetry display and relay control are both BLOCKED
+ * until `/api/version` succeeds. "UNKNOWN" must never be reported as a
+ * verified/compatible state.
+ */
+export function unreachableCompatibilityStatus(): CompatibilityStatus {
+  return {
+    status: "unknown",
+    pwaVersion: PWA_EXPECTED.pwaVersion,
+    firmwareVersion: null,
+    protocolVersion: null,
+    configSchemaVersion: null,
+    message:
+      "Device unreachable — cannot verify firmware compatibility. " +
+      "Compatibility: UNKNOWN · Firmware: UNVERIFIED · Telemetry: BLOCKED · " +
+      "Relay control: BLOCKED (until /api/version is verified).",
+    // [P0 PWA-02 FIX] was `canViewTelemetry: true` — an unverifiable device
+    // must NOT be treated as telemetry-compatible. Fail closed on BOTH gates.
+    canViewTelemetry: false,
+    canControlRelays: false,
+  };
+}
+
 export function useCompatibility() {
   const query = useQuery({
     queryKey: ["compatibility"],
     queryFn: async (): Promise<CompatibilityStatus> => {
       try {
+        // Dynamic import — see NOTE above (static-import cycle breaker).
+        const { api } = await import("./api");
         const info = await api.version();
         return evaluateCompatibility(
           info.currentVersion,
@@ -172,16 +203,8 @@ export function useCompatibility() {
           info.configSchemaVersion,
         );
       } catch {
-        return {
-          status: "unknown",
-          pwaVersion: PWA_EXPECTED.pwaVersion,
-          firmwareVersion: null,
-          protocolVersion: null,
-          configSchemaVersion: null,
-          message: "Device unreachable — cannot verify firmware compatibility.",
-          canViewTelemetry: true,
-      canControlRelays: false, // [self-review] can't verify — hide relay view
-        };
+        // [P0 PWA-02 FIX] Device unreachable → fail-closed (see helper above).
+        return unreachableCompatibilityStatus();
       }
     },
     refetchInterval: 60 * 1000,
