@@ -27,6 +27,8 @@
  *   else        — res.code / res.message explain the fail-closed reason.
  */
 
+import { resolveExpectedFirmwareTag } from "@/lib/release-policy";
+
 export interface CanonicalRelease {
   /** Authorized firmware version (SemVer, no leading "v"). */
   version: string;
@@ -82,12 +84,20 @@ const GH_HEADERS = { Accept: "application/vnd.github+json" };
 
 /**
  * The authorized production release tag for THIS PWA build.
- * Pinned by default to the current release candidate; overridable via
- * NEXT_PUBLIC_EXPECTED_FIRMWARE_TAG for staging/pre-release channels.
+ * [Audit 2026-09-05 re-audit · P1-5] This is now a POLICY INVARIANT resolved
+ * from release-policy.json via src/lib/release-policy.ts. On the production
+ * channel it can NEVER be overridden by environment — a mismatched
+ * NEXT_PUBLIC_EXPECTED_FIRMWARE_TAG throws at module init (build fails).
+ * Overrides are only possible on the explicit staging channel
+ * (NEXT_PUBLIC_RELEASE_CHANNEL=staging).
  */
-export const EXPECTED_FIRMWARE_TAG = (
-  process.env.NEXT_PUBLIC_EXPECTED_FIRMWARE_TAG ?? "v1.9.3"
-).trim();
+const EXPECTED_TAG_RESOLUTION = resolveExpectedFirmwareTag();
+
+export const EXPECTED_FIRMWARE_TAG = EXPECTED_TAG_RESOLUTION.tag;
+
+export const RELEASE_CHANNEL = EXPECTED_TAG_RESOLUTION.channel;
+
+export const EXPECTED_TAG_FROM_ENV_OVERRIDE = EXPECTED_TAG_RESOLUTION.fromEnvOverride;
 
 const EXPECTED_FIRMWARE_VERSION = EXPECTED_FIRMWARE_TAG.replace(/^v/, "");
 
@@ -136,6 +146,10 @@ function fail(
  *
  * `releases/latest` is consulted only for mismatch detection — it is never
  * a source of OTA identity.
+ *
+ * [Audit 2026-09-05 re-audit · P2 hardening] For DESTRUCTIVE OTA actions use
+ * resolveAuthorizedReleaseFresh() instead — it bypasses the display cache and
+ * re-establishes authorization immediately before upload.
  */
 export async function resolveAuthorizedRelease(): Promise<ReleaseResolution> {
   const now = Date.now();
@@ -301,6 +315,21 @@ export async function resolveAuthorizedRelease(): Promise<ReleaseResolution> {
   };
   cacheTime = now;
   return { ok: true, release: cachedRelease };
+}
+
+/**
+ * [Audit 2026-09-05 re-audit · P2 hardening] FINAL authorization step for
+ * destructive OTA: bypass the display cache entirely and re-resolve the
+ * authorized release NOW. The upload path must never act on a stale cached
+ * identity:
+ *
+ *   fresh resolve → validate → SHA verify → signature verify → upload
+ *
+ * not:  old cached release → upload.
+ */
+export async function resolveAuthorizedReleaseFresh(): Promise<ReleaseResolution> {
+  clearReleaseIdentityCache();
+  return resolveAuthorizedRelease();
 }
 
 /**
