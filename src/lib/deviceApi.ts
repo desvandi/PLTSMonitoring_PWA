@@ -65,8 +65,17 @@ export interface DeviceApiClient {
   insights: () => Promise<InsightsEnvelope>;
 
   // ---------- OTA — directly to ESP32 ----------
-  otaUpload: (file: File, onProgress?: (pct: number) => void) =>
-    Promise<{ success: boolean; newVersion?: string }>;
+  // meta is REQUIRED in PRODUCTION_BUILD: the device's OtaHandlers.cpp enforces
+  // X-Expected-SHA256, X-Signature, X-Firmware-Version headers at UPLOAD_FILE_START.
+  // Without these headers, production devices reject the upload with HTTP 500.
+  // The meta object carries the Ed25519 signature (hex), SHA-256 (hex), and
+  // firmware version string that the device uses to verify the binary before
+  // flashing.
+  otaUpload: (
+    file: File | Blob,
+    onProgress?: (pct: number) => void,
+    meta?: { sha256: string; signature: string; version: string },
+  ) => Promise<{ success: boolean; newVersion?: string }>;
 
   // ---------- System ----------
   reboot: () => Promise<{ rebooting: boolean }>;
@@ -220,13 +229,25 @@ export const deviceApi: DeviceApiClient = {
   insights: () => deviceRequest<InsightsEnvelope>("/api/insights"),
 
   // OTA — uploads binary directly to ESP32 (NOT demo route)
-  otaUpload: (file, onProgress) =>
+  // [Audit 2026-09-04] Fix PWA→firmware contract gap: send X-Expected-SHA256,
+  // X-Signature, X-Firmware-Version headers. PRODUCTION_BUILD devices reject
+  // uploads without these headers (OtaHandlers.cpp UPLOAD_FILE_START gate).
+  otaUpload: (file, onProgress, meta) =>
     new Promise<{ success: boolean; newVersion?: string }>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${API_BASE_URL}/api/ota`);
       xhr.withCredentials = true;
       const csrf = getCsrfToken();
       if (csrf) xhr.setRequestHeader("X-CSRF-Token", csrf);
+      // [P0 fix] Production OTA contract: device requires these headers to
+      // verify the binary BEFORE flashing. SHA-256 is streamed on the device
+      // and compared to X-Expected-SHA256; Ed25519 signature is verified
+      // against the compiled-in OTA_ED25519_PUBLIC_KEY_HEX.
+      if (meta) {
+        xhr.setRequestHeader("X-Expected-SHA256", meta.sha256);
+        xhr.setRequestHeader("X-Signature", meta.signature);
+        xhr.setRequestHeader("X-Firmware-Version", meta.version);
+      }
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && onProgress) {
           onProgress(Math.round((e.loaded / e.total) * 100));
