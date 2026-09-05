@@ -1,603 +1,633 @@
 # PLTS Monitor PWA — Dasbor Next.js + Push-Alarm MonitorIoT
 
-**Version:** 1.7.x (E-WAVE/WAVE-7) · **Framework:** Next.js 16 (App Router, output standalone) · **Status:** LIVE di
-[`plts-monitoring-pwa.vercel.app`](https://plts-monitoring-pwa.vercel.app) + PWA standalone di
-[`plts-monitor-push-alarm.vercel.app`](https://plts-monitor-push-alarm.vercel.app)
-· **License:** MIT · **Repositori kembar (backend/firmware):**
-[desvandi/PLTSMonitoring_Firmware-Backend](https://github.com/desvandi/PLTSMonitoring_Firmware-Backend)
-
-Frontend PWA production-grade untuk sistem monitoring PLTS 48 V LiFePO4 —
-**satu aplikasi dengan dua wajah**:
-
-1. **Aplikasi Next.js utama** (`src/`) — dasbor lengkap: baterai+BMS,
-   energi, kalibrasi, alarm, OTA, laporan, AI insights, multi-bahasa,
-   offline support — **plus push-alarm natif** (notifikasi alarm GAS tetap
-   tampil walau aplikasi ditutup).
-2. **PWA alarm standalone** (`pwa-push-alarm/`) — vanilla JS ringan khusus
-   menerima alarm (dasbor sensor + Web Push + ACK + deep-link), bisa
-   di-hosting terpisah.
-
-Prinsip inti: ***never fabricate certainty*** — setiap pengukuran membawa
-value/unit/quality/source/timestamp; sensor gagal → `null` (bukan `0`);
-telemetri basi → ditandai STALE (bukan dipretends real-time).
-
-> **Dokumen operasional utama:**
-> [`Panduan_Deploy_Production_MonitorIoT.pdf`](Panduan_Deploy_Production_MonitorIoT.pdf)
-> (di **akar** repositori ini, Edisi 4, 36 halaman) — kamus klik-demi-klik
-> semua parameter/env/kredensial, prosedur deploy GAS → PWA → firmware,
-> peran dua proyek Vercel (Bab 2.3), dan peta platform gratis Rp0 (Lampiran A).
-> Salinan identik ada di akar repo kembar.
+**Framework:** Next.js 16 (App Router, output standalone) · **Status:** LIVE
+**Live URL:** [plts-monitoring-pwa.vercel.app](https://plts-monitoring-pwa.vercel.app)
+**License:** MIT
+**Repositori kembar (firmware/backend):** [desvandi/PLTSMonitoring_Firmware-Backend](https://github.com/desvandi/PLTSMonitoring_Firmware-Backend)
 
 ---
 
 ## Daftar Isi
 
-1. [Arsitektur Singkat](#1-arsitektur-singkat)
-2. [Panduan Deployment](#2-panduan-deployment)
-3. [Environment Variables](#3-environment-variables)
-4. [Konfigurasi Runtime (Zero-Touch) & Mode Operasi](#4-konfigurasi-runtime-zero-touch--mode-operasi)
-5. [Integrasi Push-Alarm Natif](#5-integrasi-push-alarm-natif)
-6. [PWA Alarm Standalone (`pwa-push-alarm/`)](#6-pwa-alarm-standalone-pwa-push-alarm)
-7. [Struktur Proyek](#7-struktur-proyek)
-8. [Fitur Utama](#8-fitur-utama)
-9. [Kualitas & Provenance](#9-kualitas--provenance)
-10. [Offline Support](#10-offline-support)
+1. [Gambaran Proyek](#1-gambaran-proyek)
+2. [Arsitektur](#2-arsitektur)
+3. [Struktur Proyek](#3-struktur-proyek)
+4. [Fitur Utama](#4-fitur-utama)
+5. [Panduan Deployment Lengkap](#5-panduan-deployment-lengkap)
+6. [Environment Variables](#6-environment-variables)
+7. [Konfigurasi Runtime](#7-konfigurasi-runtime)
+8. [OTA Update — Push Canonical Release](#8-ota-update--push-canonical-release)
+9. [INA219 Dynamic PGA UI](#9-ina219-dynamic-pga-ui)
+10. [PWA Alarm Standalone](#10-pwa-alarm-standalone)
 11. [Testing & QA](#11-testing--qa)
-12. [Honest Disclosure](#12-honest-disclosure)
-13. [Panduan Wiring (ringkas)](#13-panduan-wiring-ringkas)
-14. [Troubleshooting](#14-troubleshooting)
-15. [Kontrol Darurat & Aliran Energi (E-WAVE v1.7)](#15-kontrol-darurat--aliran-energi-e-wave-v17)
+12. [Troubleshooting](#12-troubleshooting)
+13. [Changelog](#13-changelog)
 
 ---
 
-## 1. Arsitektur Singkat
+## 1. Gambaran Proyek
 
-```
-Next.js 16 (App Router, output: standalone)
-├── UI — 12 view (dashboard, battery+BMS, AC, energi, kalibrasi, alarm, …)
-├── API routes (runtime nodejs) — proxy REST ke ESP32 di LAN/tunnel
-├── Serwist service worker — offline shell + telemetri network-first
-│   + handler Web Push (sw.ts → public/sw.js)
-└── 3 jalur backend (bisa dikombinasikan):
-    1. ESP32 REST (LAN / Cloudflare Tunnel) — realtime, config, OTA
-    2. Google Apps Script — history, laporan, backup, insights, PUSH ALARM
-    3. MQTT broker (wss/TLS) — realtime subscribe (monitoring-only, opsional;
-       guard W7-1: hanya `wss://` yang diterima — `ws://` ditolak di produksi)
-```
+PWA (Progressive Web App) frontend untuk sistem monitoring PLTS 48V LiFePO4. Dibangun dengan Next.js 16, React 19, Tailwind CSS 4, dan shadcn/ui. **Satu aplikasi dengan dua wajah:**
 
-PWA **stateless & client-agnostic** — deploy sekali, setiap pengguna
-mengonfigurasi sendiri GAS URL + token via wizard `/setup`. Tidak ada env var
-wajib untuk mode dasar. Seluruh tumpukan berjalan di platform gratis Rp0
-tanpa kartu kredit (Vercel Hobby + GAS + push service peramban + GitHub —
-rincian kuota vs beban 2 HP + 1 modul ada di Lampiran A panduan PDF).
+1. **Aplikasi Next.js utama** (`src/`) — dasbor lengkap: baterai+BMS, energi, kalibrasi, alarm, OTA, laporan, AI insights, multi-bahasa, offline support, push-alarm natif.
+2. **PWA alarm standalone** (`pwa-push-alarm/`) — vanilla JS ringan khusus menerima alarm (Web Push + ACK + deep-link), bisa di-hosting terpisah.
 
-**Dua proyek Vercel di akun ini** — keduanya aktif dan punya peran berbeda
-(rincian + cara pakai: Bab 2.3 panduan):
+### Prinsip Inti
 
-| Proyek Vercel | URL | Isi |
-| :--- | :--- | :--- |
-| `plts-monitoring-pwa` | `plts-monitoring-pwa.vercel.app` | **Aplikasi utama** — dasbor PLTS + push-alarm natif (auto-deploy dari repo ini, branch `main`) |
-| `plts-monitor-push-alarm` | `plts-monitor-push-alarm.vercel.app` | **PWA standalone** — alarm ringan dari folder `pwa-push-alarm/` |
-
-> **Aturan anti-duplikat:** 1 HP cukup berlangganan notifikasi dari SATU
-> aplikasi — backend GAS-nya sama, subscribe ganda = notifikasi dobel.
+- **Never fabricate certainty** — setiap pengukuran membawa `value/unit/quality/source/timestamp`; sensor gagal → `null` (bukan `0`)
+- **Canonical release identity** — PWA TIDAK menjadi source-of-truth firmware; canonical source adalah GitHub Release di firmware repo
+- **Production OTA contract** — upload ke device mengirim `X-Expected-SHA256` + `X-Signature` + `X-Firmware-Version` headers
 
 ---
 
-## 2. Panduan Deployment
+## 2. Arsitektur
 
-> ⚠️ **PENTING — jangan deploy folder `public/` saja.** Folder itu hanya
-> berisi aset statis (manifest, ikon, `sw.js` hasil build) plus artefak
-> firmware untuk halaman `/install`. Aplikasi produksi adalah **aplikasi
-> Next.js** yang harus di-build — mem-deploy `public/` berarti kehilangan
-> seluruh fitur v1.6 (Alarm Center kanonik, panel BMS, badge provenance
-> SOC, API routes, offline caching yang benar).
+```
+┌─────────────────────────────────────────────────────┐
+│                    PWA (Vercel)                      │
+│                                                      │
+│  ┌─────────────┐  ┌───────────┐  ┌───────────────┐ │
+│  │  Dashboard   │  │  Battery  │  │  OTA Update   │ │
+│  │  (Realtime)  │  │  + BMS    │  │  (Canonical   │ │
+│  │              │  │           │  │   Release)    │ │
+│  └──────┬───────┘  └─────┬─────┘  └───────┬───────┘ │
+│         │                │                 │         │
+│  ┌──────┴──────────────────┴─────────────────┐      │
+│  │           API Routes (Next.js)            │      │
+│  │  /api/status  /api/ota  /api/alarms  ...  │      │
+│  └──────┬──────────────────┬─────────────────┘      │
+│         │                  │                         │
+└─────────┼──────────────────┼─────────────────────────┘
+          │                  │
+    ┌─────┴─────┐     ┌──────┴──────┐
+    │   HTTPS   │     │  GitHub API │
+    │  (proxy)  │     │  (releases) │
+    └─────┬─────┘     └──────┬──────┘
+          │                  │
+    ┌─────┴──────────────────┴─────┐
+    │           ESP32              │
+    │    (firmware v1.9.2)         │
+    └──────────────────────────────┘
+```
 
-### 2.1 Prasyarat
+### Data Flow
 
-| Kebutuhan | Keterangan |
-| :--- | :--- |
-| Akun Vercel (gratis) **atau** server Node 18+ | hosting |
-| Repo GAS sudah ter-deploy | lihat README repo firmware §4.1 |
-| (Opsional) broker MQTT wss | untuk realtime produksi |
+```
+ESP32 → MQTT/HTTPS → PWA (realtime dashboard)
+ESP32 → HTTPS → Google Apps Script → Google Sheets → PWA (history/reports)
+GitHub Release → PWA → ESP32 (OTA update)
+```
 
-### 2.2 Opsi 1 — Vercel (direkomendasikan)
+---
 
-1. **Add New Project** → import repo `PLTSMonitoring_PWA`.
-2. Framework preset: **Next.js** (terdeteksi otomatis). Build command
-   `next build`, output standalone ditangani otomatis oleh Vercel.
-3. Environment variables: **tidak wajib** untuk mode zero-touch (semua
-   konfigurasi runtime via wizard `/setup`, tersimpan di `localStorage`).
-   Tambahkan env var sesuai tabel §3 bila ingin MQTT realtime bawaan
-   atau mode LAN REST.
-4. **Deploy** → buka domain → otomatis redirect ke `/setup`.
+## 3. Struktur Proyek
 
-**Gerbang verifikasi:** `/setup` terbuka, Test Handshake ke GAS balas
-`PONG`, dashboard terbuka tanpa error console.
+```
+PLTSMonitoring_PWA/
+├── src/
+│   ├── app/                      # Next.js App Router
+│   │   ├── page.tsx              #   Main dashboard page
+│   │   ├── layout.tsx            #   Root layout (providers, theme)
+│   │   ├── api/                  #   API routes (proxy ke ESP32)
+│   │   │   ├── status/           #     GET /api/status
+│   │   │   ├── ota/              #     POST /api/ota (upload proxy)
+│   │   │   ├── ota/check/        #     POST /api/ota/check
+│   │   │   ├── ota/history/      #     GET /api/ota/history
+│   │   │   ├── alarms/           #     GET/POST /api/alarms
+│   │   │   ├── config/           #     GET/POST /api/config
+│   │   │   ├── calibration/      #     Calibration endpoints
+│   │   │   ├── reports/          #     Report generation
+│   │   │   └── ...
+│   │   ├── setup/                #   First-run setup page
+│   │   ├── install/              #   PWA install page
+│   │   ├── error.tsx             #   Error boundary
+│   │   └── loading.tsx           #   Loading skeleton
+│   │
+│   ├── components/
+│   │   ├── dashboard/            #   Dashboard view + measurement cards
+│   │   ├── battery/              #   Battery + BMS + charts
+│   │   ├── ota/                  #   OTA update view (Push Canonical Release)
+│   │   ├── relays/               #   8-channel relay control (v1.8.0+)
+│   │   ├── alarms/               #   Alarm center
+│   │   ├── emergency/            #   E-WAVE emergency control
+│   │   ├── energy/               #   Energy analytics
+│   │   ├── charts/               #   Recharts components (V/I/P/SOC)
+│   │   ├── config/               #   Configuration center
+│   │   ├── calibration/          #   Calibration wizard
+│   │   ├── diagnostics/          #   System diagnostics
+│   │   ├── settings/             #   Settings panels
+│   │   ├── ai/                   #   AI insights view
+│   │   ├── reports/              #   Report viewer
+│   │   ├── fleet/                #   Fleet management
+│   │   ├── sensors/              #   Sensor health
+│   │   ├── environment/          #   Environment (temp/humidity)
+│   │   ├── events/               #   Event log
+│   │   ├── ac/                   #   AC output view
+│   │   ├── layout/               #   App shell, sidebar, theme toggle
+│   │   ├── providers/            #   Auth, MQTT, theme, language providers
+│   │   └── ui/                   #   shadcn/ui components (40+)
+│   │
+│   ├── lib/
+│   │   ├── api.ts                #   API client (deviceApi + backendApi)
+│   │   ├── deviceApi.ts          #   ESP32 REST client (OTA headers fix)
+│   │   ├── backendApi.ts         #   GAS/backend client
+│   │   ├── release-identity.ts   #   Canonical release identity (GitHub Releases)
+│   │   ├── mqtt.ts               #   MQTT client (realtime)
+│   │   ├── types.ts              #   TypeScript types (BatteryTelemetry, dll)
+│   │   ├── format.ts             #   Formatters (fmtA, fmtADynamic, fmtV, dll)
+│   │   ├── compatibility.ts     #   Firmware version compatibility check
+│   │   ├── auth.ts               #   Auth (JWT session, CSRF)
+│   │   ├── store.ts              #   Zustand store
+│   │   ├── sysConfig.ts          #   System config (multi-device)
+│   │   ├── mockStore.ts          #   Demo mode mock data
+│   │   └── ...
+│   │
+│   ├── hooks/                    #   React hooks (useApi, useFleetStatus, dll)
+│   ├── sw.ts                     #   Service Worker (Serwist)
+│   └── types/                    #   Type declarations
+│
+├── pwa-push-alarm/               # PWA Alarm Standalone (vanilla JS)
+│   ├── index.html
+│   ├── manifest.json
+│   ├── sw.js
+│   ├── css/style.css
+│   └── js/
+│       ├── app.js
+│       ├── push-manager.js
+│       └── config.js
+│
+├── public/
+│   ├── firmware/
+│   │   └── manifest.json         # ESP Web Tools manifest (v1.9.2)
+│   ├── vendor/
+│   │   └── esp-web-tools/        # Self-hosted ESP Web Tools (10.4.0)
+│   ├── icon-192.png
+│   ├── icon-512.png
+│   ├── icon-512-maskable.png
+│   ├── manifest.webmanifest
+│   └── sw.js                     # Compiled service worker
+│
+├── .github/workflows/
+│   └── ci.yml                    # CI: lint + typecheck + test + build + cross-repo sync
+│
+├── package.json
+├── next.config.ts
+├── tailwind.config.ts
+├── tsconfig.json
+├── vitest.config.ts
+├── eslint.config.mjs
+├── components.json               # shadcn/ui config
+└── README.md                     # File ini
+```
 
-#### 2.2.1 Optimasi Vercel (aktif sejak 2026-08-28)
+---
 
-Konfigurasi berikut sudah terpasang di repo dan akun Vercel — tidak perlu
-langkah manual, tapi penting dipahami saat meng-audit atau pindah project:
+## 4. Fitur Utama
 
-> **Catatan migrasi proyek (2026-09-02/03):** aplikasi utama kini dilayani
-> proyek Vercel **`plts-monitoring-pwa`** (URL
-> `plts-monitoring-pwa.vercel.app`, auto-deploy tetap dari repo ini, branch
-> `main`). Proyek lama `jmse_plts_monitoring` (domain
-> `jmsepltsmonitoring.vercel.app`) sudah tidak ada di akun — URL lama mati.
-> Region fungsi `sin1` dipulihkan via API pada 2026-09-03 (berlaku pada
-> deploy berikutnya); cron harian `0 20 * * *`, Web Analytics, dan Speed
-> Insights aktif di proyek baru (terbawa dari konfigurasi repo + API).
+### Dashboard
+- **Realtime telemetri** — tegangan, arus, daya, SOC, suhu, kelembaban
+- **Multi-device** — switch antar device PLTS
+- **MQTT live updates** — WebSocket subscription untuk data real-time
+- **Compatibility banner** — otomatis detect firmware version mismatch
 
-| Item | Nilai | Keterangan |
-| :--- | :--- | :--- |
-| Function region | `sin1` (Singapura) | Di-set di project settings. Default `iad1` (AS) menambah ~200 ms latency untuk pengguna Indonesia |
-| Security headers | `vercel.json` | `X-Content-Type-Options`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy`, `Permissions-Policy` (kamera `(self)` untuk scan QR) |
-| Cron harian | `0 20 * * *` (03:00 WIB) | Memanggil `GET /api/health` — invocation terlihat di Vercel → *Cron Jobs* / Observability |
-| Web Analytics | `@vercel/analytics/next` v2 | Aktif otomatis di production (gratis di plan Hobby). Vercel → tab **Analytics** |
-| Speed Insights | `@vercel/speed-insights/next` v2 | Core Web Vitals nyata. Vercel → tab **Speed Insights** |
-| Lockfile | `package-lock.json` saja | `yarn.lock` basi dihapus — resolusi dependensi deterministik |
-| Cache aset | `vercel.json` | Binary firmware OTA (`/firmware/*`) cache 1 jam + SWR 1 hari; ikon PWA 1 hari; `sw.js` tetap `no-cache` |
-| Vercel Firewall | aktif (gratis semua plan) | Lihat 2.2.2 |
+### Battery & BMS
+- **Battery view** — V/I/P/SOC cards + charts + PGA mode indicator (v1.9.2)
+- **BMS block** — external BMS data (CAN/Modbus), cell voltages, SOH, CCL/DCL
+- **Energy analytics** — charge/discharge Wh, EFC, round-trip efficiency
+- **Dynamic precision** — `fmtADynamic()`: 2 desimal <10A, 1 <100A, 0 ≥100A
 
-**Endpoint `/api/health`** adalah readiness check yang jujur (tanpa
-membocorkan secret): melaporkan boolean keberadaan `NEXT_PUBLIC_MQTT_BROKER_URL`,
-kredensial MQTT, `NEXT_PUBLIC_GAS_INSIGHTS_URL` (plus ping nyata ke GAS
-timeout 8 dtk), dan validitas panjang `JWT_SECRET`. Jika semua `false`,
-env var di Vercel memang kosong — mode zero-touch via wizard `/setup` tetap
-berfungsi, tetapi MQTT realtime bawaan tidak aktif.
+### OTA Update (v1.9.2)
+- **Push Canonical Release** — fetch GitHub Release → download binary + sig → verify SHA → upload
+- **Production OTA headers** — `X-Expected-SHA256` + `X-Signature` + `X-Firmware-Version`
+- **OTA history** — GAS OTA_LOG integration, lifecycle events (ACCEPTED → ACTIVATED)
+- **Manual upload** — development mode .bin file upload
 
-> **Jangan fallback diam-diam**: jika `NEXT_PUBLIC_MQTT_BROKER_URL` kosong,
-> `src/lib/mqtt.ts` menolak koneksi dan menampilkan error eksplisit — sistem
-> tidak pernah diam-diam memakai broker publik.
+### 8-Channel Relay Control (v1.8.0+)
+- **Relay control view** — 8 channels with ON/OFF/PULSE + status badges
+- **3-tier state model** — EXECUTED / PENDING / TIMEOUT / UNKNOWN
+- **Interlock + maxOnTime** — safety supervisor display
+- **E-WAVE cascade** — emergency trip forces all OFF
 
-#### 2.2.2 Vercel Firewall (gratis di semua plan)
+### Alarm Center
+- **Active + history** — alarm lifecycle (RAISED → ACKNOWLEDGED → CLEARED)
+- **Telegram integration** — low-battery alerts via GAS → Telegram
+- **Severity levels** — Critical / Warning / Info
 
-Status diverifikasi di dashboard: **Project → Firewall**.
+### Emergency Control (E-WAVE)
+- **ARM/DISARM** — relay energize/de-energize
+- **E-stop** — emergency trip
+- **Energy flow diagram** — visual energy distribution
 
-| Lapisan | Mode | Perilaku |
-| :--- | :--- | :--- |
-| Custom rule (1 dari 3 slot Hobby) | `challenge` | Request non-browser (UA tanpa `Mozilla`) ke `/api/*` disajikan JS challenge. `/api/health` **dikecualikan** agar Cron tetap berhasil |
-| Bot Protection ruleset | `log` | Deteksi bot via heuristik TLS/JA4; mode observasi dulu |
-| AI Bots ruleset | `deny` | Crawler AI (GPTBot, ClaudeBot, Bytespider, dll.) ditolak 403 — terverifikasi live |
-| Core Ruleset (CRS) | `log` | Deteksi XSS/SQLi/RCE dalam mode log; naikkan ke `deny` bila ada serangan nyata |
-| DDoS mitigation + Attack Mode | otomatis / manual | Attack Mode diaktifkan manual via dashboard saat dibutuhkan |
+### Configuration & Calibration
+- **System config** — device name, site, timezone, idle threshold
+- **3-point voltage calibration** — low/nominal/full
+- **ACS712 zero calibration** — offset null
+- **BMS comm panel** — protocol selection
+- **OTA signing panel** — manifest publish (GAS)
 
-Batas plan Hobby: maksimal **3 custom rules**; rate limiting WAF dan OWASP
-CRS berbayar (Pro/Enterprise) — sengaja tidak dipakai. Fitur yang tidak
-tersedia di Hobby: Skew Protection (mitigasi gratis: serwist
-`reloadOnOnline` + `max-age=0` pada `sw.js` sudah aktif), Speed Insights
-Plus, WAF Rate Limiting, OWASP CRS.
+### AI Insights
+- **GasAdvisor** — HMAC-signed AI gas safety recommendations
+- **Advisory only** — labeled ESTIMATED, never authoritative
 
-### 2.3 Opsi 2 — Self-host (standalone server)
+### Reports
+- **Daily energy records** — charge/discharge Wh per day
+- **Export** — JSON download
+
+### Multi-language
+- **Indonesian + English** — full i18n (language-provider)
+- **Runtime switch** — no page reload
+
+### Offline Support
+- **Service Worker** (Serwist) — cache-first for static, network-first for API
+- **PWA installable** — standalone mode, maskable icons
+
+---
+
+## 5. Panduan Deployment Lengkap
+
+### Prasyarat
+
+- **Node.js** 20+ (recommend 22+)
+- **npm** atau **bun**
+- **Vercel account** (gratis)
+- **ESP32 device** dengan firmware v1.8.0+ (lihat firmware repo)
+- **Google Apps Script backend** (lihat firmware repo `code.gs/`)
+
+### Langkah 1: Clone & Install
 
 ```bash
 git clone https://github.com/desvandi/PLTSMonitoring_PWA.git
 cd PLTSMonitoring_PWA
 npm install
-npm run build          # build + salin static & public ke .next/standalone
-PORT=3000 node .next/standalone/server.js   # atau: bun (lihat npm start)
 ```
 
-Letakkan di balik reverse proxy HTTPS (Caddy/Nginx) — **wajib HTTPS** untuk
-service worker + Web Serial (halaman `/install`):
+### Langkah 2: Environment Variables
 
-```
-plts.domainanda.com {
-    reverse_proxy 127.0.0.1:3000
-}
-```
-
----
-
-## 3. Environment Variables
-
-Salin `.env.example` → `.env.local` (dev) atau dashboard host (produksi).
-
-| Variabel | Wajib? | Fungsi |
-| :--- | :--- | :--- |
-| `NEXT_PUBLIC_API_BASE_URL` | — | Base URL REST ESP32 (LAN/tunnel). Kosong = mode MQTT-only |
-| `NEXT_PUBLIC_MQTT_BROKER_URL` | — | `wss://broker:8884/mqtt` untuk realtime produksi — **wss:// wajib** (guard W7-1 menolak `ws://` di produksi; `ws://` hanya `NODE_ENV=development`) |
-| `NEXT_PUBLIC_MQTT_USERNAME` / `NEXT_PUBLIC_MQTT_PASSWORD` | — | Kredensial broker viewer (terpisah dari ESP32 — isolasi blast-radius). **W11-5:** variabel `NEXT_PUBLIC_*` di-inline ke bundle klien saat build → anggap **publik by construction**; ACL broker wajib read-only `plts/<deviceId>/#`, jangan pernah pakai kredensial device/write-enabled |
-| `JWT_SECRET` | hanya mode LAN | Minimal 32 karakter; tanpa ini login LAN = 403 fail-closed |
-| `NEXT_PUBLIC_PUSH_API_BASE` | — | Default build-time URL GAS PushService (opsional; isian Settings menimpa) |
-| `NEXT_PUBLIC_PUSH_VAPID_PUBLIC_KEY` | — | Default build-time kunci publik VAPID (opsional; isian Settings menimpa) |
-| `DEMO_MODE` / `NEXT_PUBLIC_DEMO_MODE` | dev saja | Mock API + kredensial demo. **Dipaksa mati di production** — guard di `src/lib/mockStore.ts` menolak dan mencatat CRITICAL |
-| `SERWIST_DEV` | — | Aktifkan SW di dev untuk uji PWA |
-
-Aturan keamanan yang dikodekan (bukan sekadar saran): mode demo dan mock
-auth **mustahil aktif** saat `NODE_ENV=production` — percobaan mengaktifkan
-memicu warning CRITICAL di log server. Kunci VAPID **publik** aman
-diekspos; kunci privat hanya di Script Properties GAS.
-
-### Development lokal
+Buat `.env.local`:
 
 ```bash
-npm install
-npm run dev            # http://localhost:3000 — mode demo otomatis (dev)
-DEMO_MODE=true npm run dev   # eksplisit
-npm run test           # vitest
-npm run typecheck      # tsc --noEmit
-npm run lint           # eslint — 0 error
-npm run build          # build produksi
+# ESP32 device URL (direct or via Cloudflare Tunnel)
+NEXT_PUBLIC_API_BASE_URL=http://192.168.1.100
+
+# Backend GAS URL
+NEXT_PUBLIC_GAS_URL=https://script.google.com/macros/s/AKfycb.../exec
+
+# Demo mode (set "false" in production)
+NEXT_PUBLIC_DEMO_MODE=false
+
+# MQTT (optional, for realtime)
+NEXT_PUBLIC_MQTT_BROKER=wss://broker.example.com:8884
+NEXT_PUBLIC_MQTT_TOPIC=plts/+/status
 ```
+
+### Langkah 3: Development
+
+```bash
+npm run dev
+# Buka http://localhost:3000
+```
+
+### Langkah 4: Build & Test
+
+```bash
+# Typecheck
+npm run typecheck
+
+# Lint
+npm run lint
+
+# Unit tests
+npm test
+
+# Production build
+npm run build
+```
+
+### Langkah 5: Deploy ke Vercel
+
+#### Opsi A: Via Vercel CLI
+
+```bash
+npm install -g vercel
+vercel login
+vercel --prod
+```
+
+#### Opsi B: Via GitHub Integration
+
+1. Buka [vercel.com](https://vercel.com) → New Project
+2. Import `desvandi/PLTSMonitoring_PWA`
+3. Set Environment Variables (sama dengan `.env.local`)
+4. Deploy → otomatis rebuild setiap push ke main
+
+### Langkah 6: Deploy PWA Alarm Standalone (Opsional)
+
+```bash
+cd pwa-push-alarm
+# Edit js/config.js:
+#   const GAS_WEBAPP_URL = 'your-gas-url';
+#   const VAPID_PUBLIC_KEY = 'your-vapid-public-key';
+
+# Deploy ke Vercel (terpisah dari main PWA)
+vercel --prod
+```
+
+### Langkah 7: Verifikasi
+
+1. Buka PWA URL di browser
+2. Login dengan AUTH_TOKEN (sama dengan GAS AUTH_TOKEN)
+3. Verifikasi dashboard menampilkan telemetri
+4. Test OTA: OTA view → "Push Canonical Release" → "Fetch Latest Release"
+5. Verifikasi PGA mode indicator muncul di battery view (jika firmware v1.9.2+)
 
 ---
 
-## 4. Konfigurasi Runtime (Zero-Touch) & Mode Operasi
+## 6. Environment Variables
 
-| Route | Fungsi |
-| :--- | :--- |
-| `/setup` | First-run wizard — GAS URL + Auth Token + Device Key, Test Handshake (PING/PONG), ekspor/impor JSON, scan QR |
-| `/install` | Flashing ESP32 via browser (ESP Web Tools) — membaca `/firmware/manifest.json`; label versi dibaca **langsung dari manifest** |
-| `/` | Dashboard — dijaga `ConfigGuard`; tanpa `PLTS_SYS_CONFIG` → redirect `/setup` |
-
-Konfigurasi tersimpan di `localStorage` (kunci `PLTS_SYS_CONFIG`, skema di
-`src/lib/sysConfig.ts`). Multi-device: satu GAS backend bisa melayani banyak
-device — ganti profil dari device switcher.
-
-**Mode operasi (matriks jujur):**
-
-| Mode | Sumber data | Sesi | Yang terlihat |
-| :--- | :--- | :--- | :--- |
-| **GAS Cloud (Viewer)** — zero-touch default | Fleet view polling `LATEST` tiap 30 dtk (SOC + provenance) | Viewer (badge `GAS Cloud · Viewer`) | Fleet, Reports GAS, alarm baca; view mutasi disembunyikan |
-| **GAS + MQTT (produksi, disarankan)** | Realtime broker + history GAS | Viewer saat via MQTT (badge `MQTT`) | Semua view baca; mutasi butuh login operator |
-| **LAN REST** | ESP32 langsung (URL LAN/tunnel) | Operator via login (JWT + CSRF) | Semua view termasuk config/kalibrasi/OTA |
-| **Demo** | Mock API internal | Operator demo (admin/admin123) | Semua view — HANYA `NODE_ENV=development` (fail-closed di produksi) |
-
-> **Perilaku mode GAS Cloud:** profil GAS tersimpan (URL+token ter-bukti
-> lewat handshake) memberi sesi **viewer** — sesi 401 tak lagi menghalangi,
-> badge mode tidak pernah bohong "mock", dashboard menunjuk ke Fleet view.
-> Kartu realtime (REST/MQTT) di mode ini jujur menampilkan panel penjelas +
-> tombol menuju Fleet.
+| Variable | Wajib | Default | Description |
+|----------|-------|---------|-------------|
+| `NEXT_PUBLIC_API_BASE_URL` | Ya | — | ESP32 device URL (direct atau tunnel) |
+| `NEXT_PUBLIC_GAS_URL` | Ya | — | Google Apps Script Web App URL |
+| `NEXT_PUBLIC_DEMO_MODE` | Tidak | `false` | Demo mode (mock data, no real device) |
+| `NEXT_PUBLIC_MQTT_BROKER` | Tidak | — | MQTT broker URL (`wss://` untuk TLS) |
+| `NEXT_PUBLIC_MQTT_TOPIC` | Tidak | `plts/+/status` | MQTT topic pattern |
+| `AUTH_TOKEN` | Ya (server) | — | GAS auth token (server-side only) |
 
 ---
 
-## 5. Integrasi Push-Alarm Natif
+## 7. Konfigurasi Runtime
 
-Notifikasi alarm GAS tetap tampil **walau aplikasi ditutup**. Cara pakai
-setelah GAS PushService ter-deploy (prosedur lengkap: Bab 4 panduan PDF):
-buka **Settings → Server Push Alarm (GAS PushService)**, tempel URL `/exec`
-+ `VAPID_PUBLIC_KEY`, simpan, nyalakan toggle, lalu *Kirim Uji Push*.
+### First-Run Setup (Zero-Touch)
 
-Komponen integrasi:
+1. ESP32 boot → WiFi AP mode ("PLTS-Setup-XXXX")
+2. Hubungkan HP ke AP → PWA auto-redirect ke `/setup`
+3. Scan QR code atau manual input:
+   - WiFi SSID + password
+   - GAS URL + AUTH_TOKEN
+   - Device name + site name
+4. Submit → ESP32 reboot → connect ke WiFi → PWA reload
 
-- **Service worker** (`src/sw.ts`, di-build Serwist ke `public/sw.js`):
-  handler `push` (payload terenkripsi aes128gcm + fallback
-  `?action=latestAlarm`), `notificationclick` (fokus jendela / buka
-  `/?view=alarms&from=push`; aksi *Tandai Ditangani* mengirim `ackAlarm`
-  ke GAS), dan `pushsubscriptionchange` (berlangganan ulang otomatis +
-  pembaruan endpoint di GAS).
-- **Panel Settings** (`src/components/settings/push-alarm-panel.tsx`):
-  isian URL + kunci publik VAPID (pola zero-touch `PLTS_SYS_CONFIG` —
-  localStorage + IndexedDB untuk SW), toggle langganan, tombol *Kirim Uji
-  Push* (rate-limit 60 dtk di sisi GAS).
-- **Pustaka** (`src/lib/push-alarm/`): `client.ts` (port TS push-manager:
-  izin hanya dari gestur, validasi kunci 65-byte 0x04, rollback saat server
-  menolak, unsubscribe server-dahulu), `sw-config-store.ts` (konfigurasi
-  runtime di IndexedDB — bisa dibaca SW), `shared.ts` (decoder base64url
-  murni + builder opsi notifikasi).
-- **Deep-link** (`src/components/providers/push-alarm-bridge.tsx`): klik
-  notifikasi mengarah ke view Alarms (URL `?view=alarms` untuk jendela
-  baru, `postMessage` untuk jendela terbuka — navigasi selalu same-origin).
-- **Hook** `src/hooks/usePushAlarm.ts` — state langganan + aksi.
-- **Uji**: `src/lib/__tests__/push-alarm.test.ts` (decoder fuzz vs orakel
-  Node, validasi konfigurasi, opsi notifikasi, guard deep-link, regresi
-  struktural handler SW) — `npm run test`.
+### Multi-Device Management
+
+- **Device switcher** di sidebar — switch antar device
+- **SysConfig store** — per-device config di localStorage
+- **Fleet view** — overview semua device
+
+### Demo Mode
+
+Jika `NEXT_PUBLIC_DEMO_MODE=true`, PWA menggunakan mock data (`src/lib/mockStore.ts`):
+- Telemetri simulasi (V/I/P/SOC berubah real-time)
+- Tidak perlu ESP32 atau GAS
+- Berguna untuk development/demo
 
 ---
 
-## 6. PWA Alarm Standalone (`pwa-push-alarm/`)
+## 8. OTA Update — Push Canonical Release
 
-PWA alarm sensor MonitorIoT versi vanilla (HTML statis) — dasbor status
-sensor suhu/kelembapan/tanah, langganan Web Push terenkripsi, notifikasi
-saat aplikasi tertutup, ACK, deep-link. Komunikasi hanya ke backend GAS
-MonitorIoT. **Backend, firmware, toolkit, dan suite regresi 203 asersi ada
-di repo kembar** (folder `push-alarm/`).
+### Flow (Production OTA)
 
 ```
-pwa-push-alarm/
-├── index.html          Halaman aplikasi (dasbor + panel notifikasi)
-├── manifest.json       Manifest PWA (nama, ikon, display, shortcut)
-├── sw.js               Service worker: handler push, notificationclick,
-│                       pushsubscriptionchange, periodicsync, cache
-├── js/config.js        KONFIGURASI (API_BASE, VAPID_PUBLIC_KEY, dst.)
-├── js/push-manager.js  Izin + langganan push + validasi kunci
-├── js/app.js           Logika dasbor: polling, render, status koneksi
-├── css/style.css       Gaya antarmuka
-├── icons/              Ikon PWA (192/512, maskable, badge 72)
-├── vercel.json         Header hosting (sw.js no-cache; hanya berlaku bila
-│                       folder ini di-deploy sebagai akar proyek Vercel)
-└── tools/verify-deployment.js   Gerbang verifikasi sebelum hosting
+1. User klik "Fetch Latest Release"
+   ↓
+2. PWA calls getCanonicalRelease()
+   → GET https://api.github.com/repos/desvandi/.../releases/latest
+   → Find asset "modular-release.json"
+   → Parse: version, firmwareSha256, gitCommit, releaseUrl
+   ↓
+3. PWA displays release info (version, SHA, git commit, URL)
+   ↓
+4. User klik "Push v1.9.2 to Device"
+   ↓
+5. PWA downloads modular-firmware.bin from GitHub Release
+   ↓
+6. PWA downloads modular-firmware.bin.sig (Ed25519 hex signature)
+   ↓
+7. PWA computes SHA-256 client-side (crypto.subtle.digest)
+   → Verify: computed SHA == canonicalRelease.firmwareSha256
+   ↓
+8. PWA uploads to ESP32: POST /api/ota
+   Headers:
+     X-Expected-SHA256: <64 hex chars>
+     X-Signature: <128 hex chars (64 bytes Ed25519)>
+     X-Firmware-Version: 1.9.2
+   ↓
+9. ESP32 verifies:
+   - Streaming SHA-256 == X-Expected-SHA256
+   - Ed25519 signature on raw SHA-256 digest
+   - Strict SemVer anti-downgrade
+   ↓
+10. ESP32 flashes + reboots → ACTIVATED lifecycle event
 ```
 
-**Penting:**
+### Manual Upload (Development)
 
-- Folder ini **tidak ikut di-build Next.js** (statis mandiri, dikecualikan
-  dari lint/tsc; `vercel.json` di dalamnya hanya berlaku bila didorong
-  sebagai proyek Vercel tersendiri).
-- **Konfigurasi (wajib sebelum hosting):** `API_BASE` di `js/config.js`
-  **dan** `sw.js` harus identik (URL GAS `/exec`), plus `VAPID_PUBLIC_KEY`
-  di `js/config.js`. Jangan edit manual — gunakan injektor 1-perintah dari
-  repo kembar:
-  ```bash
-  node tools/apply-deploy-config.js --pwa-dir <folder-ini> \
-       --url "https://script.google.com/macros/s/GANTI_ID_DEPLOYMENT/exec" \
-       --out build
-  node tools/verify-deployment.js --config build/js/config.js --sw build/sw.js
-  ```
-  Hasil verifikasi harus **SIAP DEPLOY**. `--out build` menghasilkan salinan
-  terpasang (di-gitignore) sehingga templat tetap murni placeholder.
-- Konstanta lain `js/config.js` (terkalibrasi): `APP_VERSION` 2.0.0,
-  `POLL_INTERVAL_MS` 30000, `FETCH_TIMEOUT_MS` 15000,
-  `CONNECTION_BANNER_AFTER_FAILURES` 2.
-- Hosting: unggah ISI folder build ke hosting statis HTTPS apa pun
-  (Vercel / GitHub Pages / Netlify / Cloudflare Pages).
-- iOS/iPadOS: notifikasi butuh iOS 16.4+ dan PWA dipasang ke Layar Utama.
-- Keamanan: `VAPID_PUBLIC_KEY` memang dirancang publik; kunci privat hanya
-  di Script Properties GAS; payload push maksimum 4096 byte (GAS memotong).
-- Uji end-to-end: dari editor GAS jalankan `simulateAlarmPush()` —
-  notifikasi harus masuk WALAU PWA tertutup (skenario acceptance lengkap:
-  Bab 5 panduan PDF).
+Untuk development tanpa GitHub Release:
+1. Buka OTA view → "Upload Binary"
+2. Pilih file `.bin` (max 1.5MB)
+3. Upload langsung ke ESP32 (tanpa SHA/sig headers)
+4. **Catatan:** Production build ESP32 akan menolak upload tanpa headers
 
 ---
 
-## 7. Struktur Proyek
+## 9. INA219 Dynamic PGA UI
 
-```
-├── README.md                       # dokumen ini (satu-satunya README)
-├── Panduan_Deploy_Production_MonitorIoT.pdf   # panduan go-live (akar)
-├── src/
-│   ├── app/                        # App Router — halaman + API routes (nodejs)
-│   │   ├── page.tsx                # dashboard (ConfigGuard)
-│   │   ├── setup/ · install/       # wizard + flashing browser
-│   │   └── api/                    # ~20 route: status, alarms, config, ota,
-│   │                               #   calibration, factory_reset, insights, …
-│   ├── components/                 # 12 view domain + UI kit (shadcn-style)
-│   │   ├── battery/                #   + panel BMS + badge provenance SOC
-│   │   ├── alarms/                 #   Alarm Center (kontrak {active, history})
-│   │   ├── settings/               #   BMS, kalibrasi, OTA signing, push-alarm, …
-│   │   └── providers/              #   push-alarm-bridge, auth, mqtt, …
-│   ├── lib/                        # store, api, auth/JWT, i18n, mockStore,
-│   │   └── push-alarm/             #   client + sw-config-store + shared
-│   ├── hooks/                      # useApi, useGasHealth, usePushAlarm, …
-│   └── sw.ts                       # service worker source (Serwist + push)
-├── public/
-│   ├── firmware/                   # artefak ESP Web Tools (bin + manifest)
-│   ├── manifest.webmanifest · icon-*.png
-│   └── sw.js                       # SW hasil build (jangan edit manual)
-├── pwa-push-alarm/                 # PWA alarm standalone (lihat §6)
-└── next.config.ts · vercel.json · tailwind · tsconfig · vitest · eslint
+### PGA Mode Indicator
+
+Battery view menampilkan card "INA219 PGA" yang menunjukkan mode aktif:
+- **"80mV"** — High-res standby (1–100A range)
+- **"160mV"** — Peak load mode (100–150A range)
+
+Hanya muncul jika firmware v1.9.2+ mengirim `bat.pgaMode` di telemetry.
+
+### Chart Ranges (v1.9.2)
+
+| Chart | Domain | Keterangan |
+|-------|--------|------------|
+| CurrentChart | ±200A | + reference lines di ±100A (PGA switch threshold) |
+| PowerChart | ±10000W | 150A × 57.5V ≈ 8625W peak |
+| SocChart | 0–100% | Standard SOC range |
+
+### Dynamic Precision (`fmtADynamic`)
+
+```typescript
+|I| < 10A  → 2 decimals  ("1.25 A" — standby precision)
+|I| < 100A → 1 decimal   ("45.3 A" — normal load)
+|I| ≥ 100A → 0 decimals  ("125 A"  — peak, no false precision)
 ```
 
-> Catatan sejarah: sebelum migrasi Next.js, repo ini mengirim PWA statis
-> (`public/index.html` + `app.js`) — sisa-sisanya dibersihkan oleh
-> `sw-legacy-cleanup.tsx` di sisi klien. Aset `public/` sekarang murni
-> pendukung aplikasi.
->
-> Dokumentasi arsip historis (folder `docs/remediation-2026-08/`) dihapus
-> demi struktur ramping — tersedia di riwayat git (commit sebelum
-> restukturisasi 2026-09-01); temuan pentingnya terserap ke dokumen ini.
+Ini menyesuaikan dengan INA219 dynamic gain: ±80mV mode punya 10µV resolution (0.013A), sehingga 2 desimal honest. ±160mV mode lebih noisy per-bit, sehingga 0 desimal avoids false precision.
 
 ---
 
-## 8. Fitur Utama
+## 10. PWA Alarm Standalone
 
-- **Dashboard** — kondisi PLTS dalam 5 detik: health, V/I/P baterai, SOC,
-  runtime, arus AC, T/H, alarm aktif, freshness.
-- **Battery + BMS eksternal (v1.6.0)** — data langsung dari BMS via
-  Pylontech CAN / Modbus RTU / Modbus TCP: pack V/I/T, SOH, cell
-  min/max/Δ, CCL/DCL, cycle count, fault flags, mismatch BMS-vs-shunt.
-  Kartu hanya muncul saat firmware benar-benar melaporkan blok BMS.
-- **Badge provenance SOC (v1.6.0)** — kartu SOC menunjukkan ASAL angka:
-  `BMS Direct` (hijau) / `Shunt (Coulomb)` (biru) / `OCV Estimate` (amber) /
-  `Unknown Source` (merah). Fallback BMS→shunt selalu terlihat.
-- **AC Output** — RMS/puncak/rata-rata, kualitas sinyal, daya estimasi
-  (ditandai ESTIMATED).
-- **Environment** — T/H/titik embun, risiko kondensasi, berlabel jelas
-  ambient/enclosure (BUKAN suhu baterai).
-- **Energy Analytics** — charge/discharge/netto Wh + Ah + EFC (tanpa metrik
-  PV palsu).
-- **Calibration Center** — 3-titik tegangan (LOW/NOMINAL/FULL), zero-cal
-  ACS712, offset SHT31.
-- **Alarm Center** — Active/Acknowledged/Cleared/History; ACK ≠ CLEAR.
-- **Diagnostics** — uptime, heap, RSSI, reconnect, boot count, reset reason,
-  sensor health.
-- **Reports** — harian/mingguan/bulanan + ekspor CSV/JSON.
-- **Settings** — konfigurasi device, protokol BMS/inverter (hot-apply tanpa
-  reboot), backend, **push alarm**, danger zone (reboot, factory reset).
-- **Push-Alarm natif** — notifikasi Web Push terenkripsi walau aplikasi
-  ditutup (lihat §5).
+### `pwa-push-alarm/` — Vanilla JS PWA
 
-## 9. Kualitas & Provenance (disclosure wajib)
+PWA ringan terpisah khusus menerima alarm Web Push:
 
-Setiap pengukuran menampilkan kualitasnya: **VALID** (hijau) · **DERIVED**
-(biru) · **ESTIMATED** (oranye) · **STALE** (kuning) · **INVALID/SENSOR_ERROR**
-(merah, nilai N/A — tidak pernah 0).
+- **Service Worker** — `sw.js` (push event handler, aes128gcm decryption)
+- **Push Manager** — `js/push-manager.js` (VAPID subscription, notification display)
+- **Config** — `js/config.js` (GAS URL, VAPID public key)
 
-Kualitas menjawab *seberapa bisa dipercaya*; provenance menjawab *milik siapa
-pengukurannya*. Payload firmware ≥ 1.6.0 membawa `battery.soc.provenance`;
-firmware lama / baris GAS pra-1.6 diresolve `UNKNOWN` — PWA tidak pernah
-menduga-duga antara shunt dan OCV.
+### Deploy
 
-## 10. Offline Support
+```bash
+cd pwa-push-alarm
+# Edit js/config.js dengan GAS URL + VAPID public key
+vercel --prod
+```
 
-- Service worker riil (Serwist): app shell cache-first, telemetri network-first.
-- Telemetri terakhir > 10 s → "OFFLINE — Last seen: Xs lalu"; > 60 s →
-  banner STALE.
+### Fitur
+
+- **Alarm notifications** — tampil walau PWA tertutup (Web Push API)
+- **ACK button** — acknowledge alarm langsung dari notification
+- **Deep-link** — klik notification → buka main PWA di alarm yang relevan
+- **Sensor dashboard** — dasbor sederhana (V/I/SOC/alarm status)
+
+---
 
 ## 11. Testing & QA
 
+### Run Tests
+
 ```bash
-npm run test         # vitest — 123 asersi (truth-semantics, soc-provenance, sysconfig,
-                     #   push-alarm, admin-token-session, mqtt TLS-guard)
-npm run typecheck    # tsc --noEmit — 0 error
-npm run build        # next build — sukses (standalone)
-npm run lint         # eslint — 0 error
+# Typecheck
+npm run typecheck
+
+# Lint
+npm run lint
+
+# Unit tests (Vitest)
+npm test
+
+# Watch mode
+npm run test:watch
+
+# Build
+npm run build
 ```
 
-**Utang lint react-hooks: LUNAS (audit production-grade 2026-08-28).**
-Baseline 13 error (11 `set-state-in-effect` + 2 `exhaustive-deps`)
-direstrukturisasi dengan pola resmi React, bukan disable komentar —
-*adjust state during render*, derived-state, `useSyncExternalStore`,
-deferral macrotask, deps presisi. Aturan `react-hooks/*` tetap `error`;
-0 error berarti benar-benar bersih. 31 warning kosmetik tersisa
-(non-null assertion di parser lama + `no-console` di worker publik).
+### CI Pipeline (`.github/workflows/ci.yml`)
 
-## 12. Honest Disclosure
+| Job | Fungsi |
+|-----|--------|
+| ESLint | Code quality check |
+| TypeScript typecheck | Type safety |
+| Vitest unit tests | Unit test suite |
+| Next.js production build | Build verification |
+| Cross-repo firmware manifest sync | PWA manifest == firmware repo manifest |
 
-- Hardware Acceptance Tests (HW-001..HW-025) **BELUM DIEKSEKUSI** — butuh
-  hardware fisik (prosedur: riwayat git + ringkas di panduan PDF).
-- Layer BMS multi-protokol v1.6.0 terverifikasi Level 1-2 (kode + mirror
-  test + round-trip GAS). Eksekusi bench Level 3 (baterai riil di
-  CAN/RS485) **PENDING**.
-- Peta register Modbus default adalah **CONTOH** — verifikasi ke dokumen
-  register baterai Anda sebelum produksi.
-- Audit independen TIDAK DIKLAIM.
-- Riwayat perbaikan audit (ringkas): 2026-08-27 — lint pipeline crash
-  diperbaiki; 57 error laten; crash Alarm Center diperbaiki via kontrak
-  kanonik `{active, history}`; panel BMS mode demo via `deviceConfigOf()`;
-  firmware kompanion v1.6.1 menyamakan `GET /api/alarms`. 2026-08-28
-  (pra-bench) — login-wall mode GAS → sesi viewer; parser fleet GAS
-  envelope nested (`src/lib/gasEnvelope.ts` + 18 asersi regresi);
-  `device_key` dikirim pada `LATEST`; simpan `/setup` mode edit tak lagi
-  menghapus fleet multi-device; blokir duplikat device_id; clamp interval.
-  2026-08-28 (gelombang 2) — 13 error react-hooks tuntas; pruning
-  rate-limiter login; hash OTA terikat file terpilih; sesi MQTT
-  derived-state. 2026-09-01 — decoder base64url `push-manager.js`
-  menormalkan `-`/`_` (versi lama gagal subscribe untuk ~93% kunci VAPID
-  acak; mock `atob` harness dikeraskan + asersi regresi).
-  2026-09-02 — **remediasi audit P1/P2 + wave 7-10**: ADMIN_TOKEN kini
-  *session-scoped* (`src/lib/adminTokenSession.ts` — sessionStorage +
-  fallback memori + migrasi satu kali; TIDAK PERNAH di localStorage,
-  tab baru diminta ulang = fail-closed); skema darurat 13 field
-  (`sensorFailPolicy`, default fail-closed, sinkron GAS + firmware v1.7.0);
-  sinkron binari firmware-generic v1.7.0 via skrip rilis resmi; guard
-  TLS-only MQTT W7-1 (`connectMqtt()` menolak selain `wss://` di produksi,
-  `ws://` hanya dev — 6 uji baru `mqtt.test.ts`; suite 123/123).
-  2026-09-03 — **wave 11 (audit MQTT/TLS menyeluruh)**: W11-1 kontrak
-  deviceId lintas-lapis — PWA kini menerima `PLTS-XXXXXX` (6 hex,
-  bentuk nyata firmware modular dari eFuse MAC) **atau** `PLTS-XXXXXXXX`
-  (8 hex, bentuk generik terdokumentasi); sebelumnya regex 8-hex membuat
-  mode realtime MQTT mustahil tersambung ke perangkat nyata (5 uji baru
-  `mqtt.test.ts`). W11-2 esp-web-tools self-host di
-  `public/vendor/esp-web-tools/10.4.0/` (provenance + sha256 di
-  PROVENANCE.md; sebelumnya unpkg.com floating `@10` tanpa SRI + dynamic
-  import balik ke CDN = lubang rantai pasokan WebSerial) + `unpkg.com`
-  dihapus dari CSP. W11-3 header HSTS ditambahkan; W11-4 CSP `connect-src`
-  buang `ws:` (hanya `wss:`) + `serial=(self)` di Permissions-Policy.
-  2026-09-03 — **wave 12 (regresi kontrak lintas-lapis penuh, post-v1.7.0)**:
-  W12-1 kontrak telemetri darurat — firmware modular memancarkan
-  `estopOpen`/`trips` sementara GAS/PWA membaca `estopLine`/`tripCount`/
-  `estopLineOpen` → status E-stop + hitungan trip hilang senyap
-  (panel darurat menampilkan "tertutup"/"—" padahal perangkat TRIP);
-  fix firmware (kunci kanonik `estopLineOpen`/`tripCount`) + rantai
-  fallback di ingest GAS — parser PWA (`gasEnvelope.ts`) kini lolos
-  regresi 13 uji baru (`gasEnvelope.test.ts`). W12-2 PZEM-004T v1.7.0
-  dead-end → jalur pelaporan tersambung: slot `AcMeterMeasurement` di
-  `types.ts`, parse blok `ac.meter` (fleet view `p_ac_meter`/`meter_v`/
-  `meter_connected`), kartu **TERUKUR** (daya/tegangan/frekuensi/PF/
-  energi kumulatif, badge MEASURED) di halaman AC — tampil hanya saat
-  firmware melaporkan meter; terputus → peringatan jujur, bukan 0 W.
-  2026-09-03 — **wave 13 (kompatibilitas armada campuran + OTA end-to-end)**:
-  panel OTA kini membaca **event OTA nyata** dari sheet GAS OtaEvents lewat
-  aksi baru `OTA_LOG` (fallback mock bila GAS tak terkonfigurasi/tak
-  terjangkau — tabel riwayat menampilkan kata kerja perangkat mentah
-  `ACTIVATED`/`ROLLBACK`/`DOWNLOAD_FAILED`/`REFUSED`/`VERIFICATION_FAILED`
-  + pesan via tooltip; sebelumnya sheet itu write-only sejak WAVE-6, operator
-  harus membuka spreadsheet manual). Panel publish (Settings → OTA) kini
-  menawarkan **Target Armada** (`Semua armada`/`generic`/`modular`) →
-  `manifest.target` — GAS menyaring manifest bertarget per kolom
-  `firmware_type` sheet Devices (fail-closed untuk perangkat
-  tak-dideklarasikan), firmware ≥ v1.7.1 juga menolak target asing
-  (`REFUSED`) — menutup risiko cross-flash antar-pohon firmware lewat domain
-  trust HMAC bersama. `OtaHistoryEntry` + field opsional `event`/`message`
-  (`types.ts`). Sinkron binari firmware-generic **v1.7.1** (bin + manifest,
-  v1.7.0 dihapus) via skrip rilis resmi.
+### Key Test Files
 
-## 13. Panduan Wiring (ringkas)
-
-Panduan wiring lengkap (keselamatan, spesifikasi kabel, urutan pemasangan
-DC/AC, peta bus I²C, daya, port BMS RS485/CAN, checklist pra-daya P1–P10,
-tabel kesalahan umum) ada di repo firmware → **README §8**.
-
-Ringkasnya: pembagi tegangan → GPIO 34 · INA219 (0x40) kelvin-clamp di
-shunt, SDA 21/SCL 22 · SHT31 (0x44) & DS3231 (0x68) di bus I²C sama ·
-ACS712 di fasa L saja → GPIO 35 · RS485 (MAX3485) TX 16/RX 17/DE 4 · CAN
-(SN65HVD230) TX 25/RX 26 — terminator 120 Ω dua ujung untuk bus BMS.
-
-## 14. Troubleshooting
-
-| Gejala | Penyebab umum | Fix |
-| :--- | :--- | :--- |
-| Redirect terus ke `/setup` | `PLTS_SYS_CONFIG` kosong/korup | Ulangi wizard; atau impor ulang JSON backup |
-| Handshake gagal (CORS) | Deployment GAS bukan "Anyone" | Redeploy GAS dengan akses Anyone |
-| Login LAN 403 di produksi | `JWT_SECRET` kosong / mock auth fail-closed | Perilaku benar — mode GAS Cloud viewer aktif bila profil GAS tersimpan; untuk mutasi set `NEXT_PUBLIC_API_BASE_URL` + login operator |
-| Data realtime tidak muncul | Broker MQTT tidak di-set / ESP32 offline | Cek `NEXT_PUBLIC_MQTT_BROKER_URL` + koneksi device |
-| MQTT menolak koneksi dengan error skema | Guard W7-1: `ws://` ditolak di produksi (hanya `wss://`) | Ganti URL broker ke `wss://...` (mis. port TLS 8884); `ws://` hanya untuk `NODE_ENV=development` |
-| MQTT menolak Device ID "PLTS-1A2B3C" | W11-1: kini DITERIMA (6 hex = bentuk firmware modular; 8 hex generik juga) | Masukkan persis ID yang dicetak perangkat di Serial Monitor; 5/7/9 hex tetap ditolak |
-| Push alarm tidak masuk saat aplikasi ditutup | Izin notifikasi mati / langganan dari aplikasi lain | Cek izin OS+browser; pastikan subscribe dari SATU aplikasi (Bab 2.3 panduan) |
-| Notifikasi alarm dobel | Berlangganan dari Next.js DAN PWA standalone | Berhenti berlangganan dari salah satu |
-| Badge SOC "Unknown Source" | Firmware < v1.6.0 (memang jujur) | Upgrade firmware; badge merah bukan bug |
-| Fleet semua nilai "—" padahal online | device_key di profil ≠ device_key telemetri | Samakan Device Key di `/setup`; cek baris Telemetry di Sheet |
-| Fleet 404 untuk device ke-2 dst | device_key tidak terdaftar di tab `Devices` GAS | Tambahkan baris device di sheet `Devices` |
-| Tombol `/install` mati | Browser tanpa Web Serial (iOS/Android/Firefox) | Gunakan Chrome/Edge **desktop** |
-| `/install` memuat komponen dari CDN? | Tidak — W11-2: self-host `/vendor/esp-web-tools/10.4.0/` (pinned, immutable cache) | Perilaku benar; upgrade via prosedur PROVENANCE.md |
-| Kartu "Daya Terukur (PZEM)" tidak muncul di halaman AC | Firmware belum melaporkan blok `ac.meter` — flag `PLTS_ENABLE_PZEM_AC` masih 0 (default, menunggu validasi bench) atau meter tidak terpasang | Perilaku benar (absen = jujur "tidak ada meter"); nyalakan flag firmware setelah `docs/bench/PANDUAN_VALIDASI.md` §3 lulus |
-| Versi firmware di `/install` "tidak diketahui" | `public/firmware/manifest.json` tak terbaca | Pastikan file ada & valid (label fail-closed) |
-| Service worker stale saat dev | Cache Serwist lama | `SERWIST_DEV=true npm run dev` + hard reload |
+| File | Fungsi |
+|------|--------|
+| `src/lib/__tests__/gasEnvelope.test.ts` | Gas envelope parsing |
+| `src/lib/__tests__/mqtt.test.ts` | MQTT client |
+| `src/lib/__tests__/push-alarm.test.ts` | Push alarm integration |
+| `src/lib/__tests__/emergency.test.ts` | Emergency schema |
+| `src/lib/__tests__/energyFlow.test.ts` | Energy flow calculation |
+| `src/lib/__tests__/soc-provenance.test.ts` | SOC provenance |
+| `src/lib/__tests__/truth-semantics.test.ts` | Truth state semantics |
+| `src/lib/__tests__/admin-token-session.test.ts` | Admin token session |
+| `src/lib/__tests__/ai-insights-contract.test.ts` | AI insights contract |
 
 ---
 
-**Monitoring-only.** PWA ini tidak menggerakkan relay/aktuator apa pun —
-sesuai brief keamanan proyek.
+## 12. Troubleshooting
+
+### PWA tidak bisa connect ke ESP32
+
+**Penyebab:** `NEXT_PUBLIC_API_BASE_URL` salah atau ESP32 tidak di LAN yang sama.
+
+**Fix:**
+1. Verifikasi URL: `curl http://<ESP32-IP>/api/health`
+2. Jika ESP32 di belakang tunnel (Cloudflare), set URL ke tunnel domain
+3. Jika development, set `NEXT_PUBLIC_API_BASE_URL=http://localhost:3000` (proxy via Next.js)
+
+### OTA: "OTA upload failed" / HTTP 500
+
+**Penyebab:** ESP32 production build menolak upload tanpa signature headers.
+
+**Fix:**
+1. Gunakan "Push Canonical Release" card (bukan manual upload)
+2. Klik "Fetch Latest Release" dulu → verifikasi release info muncul
+3. Klik "Push v1.9.2 to Device" → PWA akan download + verify SHA + upload dengan headers
+
+### PGA mode indicator tidak muncul
+
+**Penyebab:** Firmware < v1.9.2 tidak mengirim `bat.pgaMode` field.
+
+**Fix:**
+1. Update firmware ke v1.9.2+ (lihat firmware repo)
+2. Verifikasi di Serial Monitor: log INA219 config readback `0x0FFF`
+3. Cek telemetry JSON: `bat.pgaMode` harus "80mV" atau "160mV"
+
+### Chart current terpotong di 100A
+
+**Penyebab:** PWA lama (sebelum v1.9.2) masih pakai domain auto/100A.
+
+**Fix:**
+1. Update PWA ke versi terbaru (commit `9c8510a`+)
+2. Verifikasi CurrentChart domain = `[-200, 200]`
+
+### MQTT tidak connect
+
+**Penyebab:** Broker URL salah, TLS issue, atau topic pattern mismatch.
+
+**Fix:**
+1. Set `NEXT_PUBLIC_MQTT_BROKER` dengan format `wss://broker:port` (WSS untuk TLS)
+2. Verifikasi broker menerima koneksi: `openssl s_client -connect broker:port`
+3. Cek topic pattern: `NEXT_PUBLIC_MQTT_TOPIC=plts/+/status`
+
+### Demo mode tidak bisa dimatikan
+
+**Penyebab:** `NEXT_PUBLIC_DEMO_MODE` masih `true` atau environment variable tidak ter-load.
+
+**Fix:**
+1. Set `NEXT_PUBLIC_DEMO_MODE=false` di Vercel dashboard (Settings → Environment Variables)
+2. Redeploy (push commit atau manual redeploy)
+3. Hard refresh browser (Ctrl+Shift+R)
 
 ---
 
-## 15. Kontrol Darurat & Aliran Energi (E-WAVE v1.7)
+## 13. Changelog
 
-> **Pembaruan kontrak:** sejak firmware-generic v1.6.0 + Code.gs WAVE-7,
-> sistem memiliki SATU aktuator — relay darurat fail-safe. Kalimat
-> "monitoring-only" di atas tetap benar untuk seluruh telemetri; satu-satunya
-> kontrol adalah pemutus darurat (fail-safe by design: mati = terisolasi).
+### v1.9.2 (Current)
+- **INA219 Dynamic PGA UI** — PGA mode indicator card ("80mV"/"160mV")
+- **Chart ranges updated** — CurrentChart ±200A, PowerChart ±10000W
+- **Dynamic precision** — `fmtADynamic()`: 2 decimals <10A, 1 <100A, 0 ≥100A
+- **PGA mode field** — `BatteryTelemetry.pgaMode` optional field
+- **OTA headers fix** — `deviceApi.otaUpload` mengirim `X-Expected-SHA256` + `X-Signature` + `X-Firmware-Version`
+- **Push Canonical Release** — full production OTA flow (fetch → download → verify → upload)
+- **Firmware manifest sync** — `public/firmware/manifest.json` version 1.9.2
 
-Menu **Kontrol Darurat** (ikon perisai di sidebar) berisi:
+### v1.8.0
+- **8-channel relay control** — relay-control-view dengan 3-tier state model
+- **Compatibility gate** — firmware version check sebelum relay UI
+- **PWA CI** — lint + typecheck + test + build + cross-repo manifest sync
 
-- **Status relay darurat** (RUN / TERISOLASI / TIDAK DIKETAHUI), alasan trip
-  terakhir (`VBAT_LOW`, `ESTOP`, `OPERATOR`, `BOOT`, `CRASHLOOP`, ...),
-  total trip, dan indikator jalur E-stop fisik. Firmware < 1.6.0 → status
-  TIDAK DIKETAHUI (jujur, tidak dinebak RUN).
-- **Tombol ARM** — satu klik; perangkat mengeksekusi dalam ±15 detik dan
-  BOLEH MENOLAK bila pemicu masih aktif / masa pulih belum lewat /
-  crash-chain aktif — alasan penolakan tampil di toast.
-- **Tombol EMERGENCY STOP** — wajib konfirmasi **mengetik kata `STOP`**;
-  sistem terisolasi total (PV, baterai, jenset, beban AC lepas dari
-  inverter). Rilis E-stop fisik TIDAK menyalakan ulang — hanya ARM.
-- **Editor ambang pemicu** (semua sensor): VBAT rendah/tinggi + histeresis,
-  arus DC/beban/jenset maksimum, debounce, masa pulih, pin GPIO —
-  dikirim lewat `EMERGENCY_COMMAND/CONFIG`, divalidasi 3 lapis
-  (PWA → GAS → firmware), dipersisten di LittleFS perangkat.
-- **Diagram Aliran Energi animasi**: PLTS / Baterai / Jenset / Inverter /
-  Beban; kecepatan tepi sebanding daya, arah baterai terbalik saat
-  mengisi, kanal tak terukur tampil "?" (bukan 0 W), simpul PLTS
-  ditandai *inferensi* (daya PV tidak terukur). Menghormati
-  `prefers-reduced-motion`. Logika arah dipatok uji
-  (`src/lib/__tests__/energyFlow.test.ts`).
+### v1.7.x
+- **E-WAVE emergency control** — ARM/DISARM/E-stop + energy flow diagram
+- **PZEM-004T AC meter** — real AC meter integration
+- **GAS OTA_LOG** — real device-reported OTA events
+- **Multi-language** — Indonesian + English
+- **Canonical release identity** — `release-identity.ts` (GitHub Releases API)
+- **Cross-layer contract tests** — WAVE 7-13 regression
 
-**Otorisasi**: perintah darurat membutuhkan **Admin Token** (rahasia
-operator = `Config!ADMIN_TOKEN` di sheet GAS) — isikan di halaman
-`/setup` (kolom *Admin Token*). Tanpa token: tombol mematikan diri
-sendiri dengan pesan jujur (fail-closed). Token perangkat
-(`auth_token`) TIDAK cukup untuk ARM/DISARM — domain kepercayaan
-terpisah, sama seperti OTA.
+### v1.6.x
+- **External BMS** — CAN/Modbus integration
+- **SOC provenance** — BMS_DIRECT | SHUNT_COULOMB | OCV_ESTIMATED
+- **AI insights** — GasAdvisor HMAC-signed advisory
+- **Energy analytics** — charge/discharge Wh, EFC, round-trip efficiency
 
-**Komponen baru**: `src/components/emergency/` (panel + diagram SVG),
-`src/lib/emergency.ts` (klien GAS + skema **13** field — v1.7.0 [P1] menambah `sensorFailPolicy`, fail-closed default), `src/lib/adminTokenSession.ts` (ADMIN_TOKEN session-scoped, tidak pernah di localStorage),
-`src/lib/energyFlow.ts` (model murni), `src/lib/gasEnvelope.ts`
-(parser blok `emergency` + `i_ac_gen`), field `admin_token` per perangkat
-di `PLTS_SYS_CONFIG`, dan kartu **Arus Jenset → Inverter** di view AC
-(hanya tampil bila firmware melaporkan kanal tersebut).
+---
 
-**Wiring darurat + E-stop + ACS712 ganda**: lihat
-`docs/wiring/emergency-relay.png` di repo firmware (atau Gambar 3 §8.2
-README firmware) dan Bab 7 dokumen *Audit EMI & Ketahanan Noise*.
+## License
+
+MIT — see [LICENSE](LICENSE)
+
+## Kontak
+
+- **Live URL:** [plts-monitoring-pwa.vercel.app](https://plts-monitoring-pwa.vercel.app)
+- **GitHub Issues:** [github.com/desvandi/PLTSMonitoring_PWA/issues](https://github.com/desvandi/PLTSMonitoring_PWA/issues)
+- **Firmware Repo:** [github.com/desvandi/PLTSMonitoring_Firmware-Backend](https://github.com/desvandi/PLTSMonitoring_Firmware-Backend)
