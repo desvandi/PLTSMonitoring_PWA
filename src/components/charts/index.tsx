@@ -216,6 +216,10 @@ export function VoltageChart({ data }: { data: ChartPoint[] }) {
 
 export function CurrentChart({ data }: { data: ChartPoint[] }) {
   const colors = useChartColors();
+  // [v1.9.0 / DYNAMIC-GAIN] Domain widened from auto to fixed ±200A to
+  // accommodate peak load up to 150A without chart overflow. The INA219
+  // dynamic gain switching (±80mV standby / ±160mV peak) covers 1-150A;
+  // ±200 gives headroom for transient spikes + reference lines.
   return (
     <BaseAreaChart
       data={data}
@@ -223,13 +227,19 @@ export function CurrentChart({ data }: { data: ChartPoint[] }) {
       color={colors.chart2}
       unit="A"
       title="Battery Current (A) — signed (+charge / -discharge)"
-      referenceLines={[{ value: 0, label: '0A', color: 'hsl(var(--status-off))' }]}
+      domain={[-200, 200]}
+      referenceLines={[
+        { value: 0, label: '0A', color: 'hsl(var(--status-off))' },
+        { value: 100, label: 'PGA↑', color: 'hsl(var(--status-warn))' },
+        { value: -100, label: 'PGA↑', color: 'hsl(var(--status-warn))' },
+      ]}
     />
   );
 }
 
 export function PowerChart({ data }: { data: ChartPoint[] }) {
   const colors = useChartColors();
+  // [v1.9.0 / DYNAMIC-GAIN] Domain widened to ±10000W (150A × 57.5V ≈ 8625W peak)
   return (
     <BaseAreaChart
       data={data}
@@ -237,6 +247,7 @@ export function PowerChart({ data }: { data: ChartPoint[] }) {
       color={colors.chart3}
       unit="W"
       title="Battery Power (W) — signed"
+      domain={[-10000, 10000]}
       referenceLines={[{ value: 0, label: '0W', color: 'hsl(var(--status-off))' }]}
     />
   );

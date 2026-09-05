@@ -124,6 +124,9 @@ export interface BatteryTelemetry {
   estimatedUsableCapacityAh: number | null; // NOT "SOH" — brief §22
   peakChargeCurrent: number | null;        // A, max charging current observed
   peakDischargeCurrent: number | null;     // A, max discharging current observed (positive)
+  // [v1.9.0 / DYNAMIC-GAIN] INA219 PGA mode — "80mV" (standby) | "160mV" (peak).
+  // Absent on firmware < v1.9.0 (treated as legacy — no dynamic gain switching).
+  pgaMode?: string | null;
   // v1.6.0 — external BMS/inverter comm block. Absent on firmware <1.6.0
   // (treated as "no BMS" — provenance falls back to the shunt path honestly).
   bms?: BmsStatus | null;

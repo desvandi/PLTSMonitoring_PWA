@@ -24,7 +24,7 @@ import {
 } from '@/lib/types';
 import type { TranslationKey } from '@/lib/i18n';
 import { useLanguage } from '@/components/providers/language-provider';
-import { fmtV, fmtA, fmtW, fmtPct, fmtTemp, formatRelativeTime } from '@/lib/format';
+import { fmtV, fmtADynamic, fmtW, fmtPct, fmtTemp, formatRelativeTime } from '@/lib/format';
 import { AlertCircle, Clock, HelpCircle } from 'lucide-react';
 import { ReactNode } from 'react';
 
@@ -180,7 +180,8 @@ export function MeasurementCard({
   let valueStr: string;
   switch (format) {
     case 'current':
-      valueStr = fmtA(measurement.value);
+      // [v1.9.0 / DYNAMIC-GAIN] Dynamic precision: 2 decimals < 10A, 1 < 100A, 0 >= 100A
+      valueStr = fmtADynamic(measurement.value);
       break;
     case 'power':
       valueStr = fmtW(measurement.value);
