@@ -104,12 +104,81 @@ jobs:
           if-no-files-found: warn
 
   # --------------------------------------------------------------------------
+  # [Audit 2026-09-05 re-audit · P1-5/P1-8] Production identity + configuration
+  # gate. The authorized firmware tag is a POLICY INVARIANT (release-policy.json):
+  #   EXPECTED_FIRMWARE_TAG == authorized release policy, else BUILD FAIL.
+  # Runs the gate three ways:
+  #   (a) representative production env  → must PASS
+  #   (b) wrong tag override             → must FAIL (proves the gate blocks)
+  #   (c) demo fallback + localhost      → must FAIL (proves the gate blocks)
+  # "Gate the gate": a gate that cannot be proven to BLOCK is not a gate.
+  # --------------------------------------------------------------------------
+  production-config-gate:
+    name: Production identity & config gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: "(a) Representative production env — gate must PASS"
+        run: |
+          set -e
+          NEXT_PUBLIC_MQTT_BROKER_URL='wss://broker.plts-monitoring.internal' \
+          NEXT_PUBLIC_API_BASE_URL='https://plts-tunnel.example.com' \
+          node scripts/validate-production-config.mjs --mode production
+
+      - name: "(b) Wrong firmware tag override — gate must FAIL (exit 1)"
+        run: |
+          set +e
+          NEXT_PUBLIC_EXPECTED_FIRMWARE_TAG='v0.0.1' \
+          NEXT_PUBLIC_MQTT_BROKER_URL='wss://broker.plts-monitoring.internal' \
+          node scripts/validate-production-config.mjs --mode production
+          rc=$?
+          set -e
+          if [ "$rc" -ne 1 ]; then
+            echo "GATE BROKEN: a wrong-tag production config must BLOCK (expected exit 1, got $rc)"
+            exit 1
+          fi
+          echo "OK: wrong tag blocked (exit 1)"
+
+      - name: "(c) Demo fallback + localhost — gate must FAIL (exit 1)"
+        run: |
+          set +e
+          NEXT_PUBLIC_DEMO_MODE='true' \
+          NEXT_PUBLIC_API_BASE_URL='http://localhost:8080' \
+          NEXT_PUBLIC_MQTT_BROKER_URL='wss://public.mqtthq.com' \
+          node scripts/validate-production-config.mjs --mode production
+          rc=$?
+          set -e
+          if [ "$rc" -ne 1 ]; then
+            echo "GATE BROKEN: demo+localhost+public-broker config must BLOCK (expected exit 1, got $rc)"
+            exit 1
+          fi
+          echo "OK: development fallback blocked (exit 1)"
+
+      - name: "(d) Staging channel sanity — explicit staging override must be allowed"
+        run: |
+          set -e
+          NEXT_PUBLIC_RELEASE_CHANNEL='staging' \
+          NEXT_PUBLIC_EXPECTED_FIRMWARE_TAG='v1.9.4' \
+          NEXT_PUBLIC_MQTT_BROKER_URL='wss://broker.plts-monitoring.internal' \
+          node scripts/validate-production-config.mjs --mode staging
+          echo "OK: staging channel allows explicit tag override (production does not)"
+
+  # --------------------------------------------------------------------------
   # P0-6 / P1-1 — Cross-repo contract check: the PWA's firmware manifest
   # must match the firmware repo's canonical manifest. The firmware repo's
   # manifest lives at firmware-generic/manifest.json (committed source);
   # the PWA's mirror lives at public/firmware/manifest.json (synced by
   # release_firmware_generic.py). If their `version` or `builds[].parts`
   # drift, OTA from PWA flashes the wrong binary.
+  # [Audit 2026-09-05 re-audit · P1-9] EXTENDED: also verifies (1) the PWA
+  # release-policy authorized tag == firmware manifest version == firmware
+  # source FIRMWARE_VERSION, and (2) the OTA upload header contract
+  # (X-Expected-SHA256 / X-Signature / X-Firmware-Version) is identical on
+  # both sides. A drift on ANY of these breaks the OTA contract.
   # --------------------------------------------------------------------------
   cross-repo-contract:
     name: Cross-repo firmware manifest sync
@@ -125,19 +194,19 @@ jobs:
           path: firmware
           token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
 
-      - name: Compare manifests
+      - name: Compare manifests + release identity + OTA header contract
         run: |
           set -e
           python3 - <<'PY'
-          import json, sys
+          import json, re, sys
+
+          # ---- 1. Manifest version + parts sync (original check) ----
           pwa = json.load(open('pwa/public/firmware/manifest.json'))
           fw  = json.load(open('firmware/firmware-generic/manifest.json'))
           if pwa.get('version') != fw.get('version'):
               print(f"FAIL: PWA manifest version {pwa.get('version')!r} "
                     f"!= firmware manifest version {fw.get('version')!r}")
               sys.exit(1)
-          # PWA builds use no 'bin/' prefix (files are siblings of manifest);
-          # firmware repo builds use 'bin/' prefix. Normalize and compare.
           def norm(parts):
               return sorted((p['path'].split('/')[-1], p['offset']) for p in parts)
           pwa_parts  = norm(pwa['builds'][0]['parts'])
@@ -146,4 +215,55 @@ jobs:
               print(f"FAIL: parts mismatch\n PWA: {pwa_parts}\n FW: {fw_parts}")
               sys.exit(1)
           print(f"PASS: manifests in sync — v{pwa['version']}, {len(pwa_parts)} parts")
+
+          # ---- 2. [P1-9] Release identity sync ----
+          # PWA authorized tag (release-policy.json) must equal the firmware
+          # repo's manifest version AND the firmware source FIRMWARE_VERSION.
+          policy = json.load(open('pwa/release-policy.json'))
+          authorized_tag = policy.get('authorizedProductionTag', '')
+          m = re.match(r'^v(\d+\.\d+\.\d+)$', authorized_tag)
+          if not m:
+              print(f"FAIL: PWA release-policy.json authorizedProductionTag {authorized_tag!r} is not vX.Y.Z")
+              sys.exit(1)
+          policy_version = m.group(1)
+          if policy_version != fw.get('version'):
+              print(f"FAIL: PWA authorized tag {authorized_tag} != firmware manifest version v{fw.get('version')}")
+              sys.exit(1)
+          config_h = open('firmware/firmware/Core/Config.h').read()
+          cm = re.search(r'FIRMWARE_VERSION\s*=\s*"(\d+\.\d+\.\d+)"', config_h)
+          if not cm:
+              print("FAIL: cannot parse FIRMWARE_VERSION from firmware/Core/Config.h")
+              sys.exit(1)
+          if cm.group(1) != policy_version:
+              print(f"FAIL: firmware source FIRMWARE_VERSION {cm.group(1)} != PWA authorized version {policy_version}")
+              sys.exit(1)
+          print(f"PASS: release identity in sync — PWA policy {authorized_tag} == manifest v{fw.get('version')} == source v{cm.group(1)}")
+
+          # ---- 3. [P1-9] OTA upload header contract ----
+          # PWA must SEND exactly the headers firmware READS on the OTA
+          # upload endpoint. A renamed header silently disables production
+          # verification (PRODUCTION_BUILD devices reject unsigned uploads).
+          pwa_api = open('pwa/src/lib/deviceApi.ts').read()
+          fw_ota  = open('firmware/firmware/Web/OtaHandlers.cpp').read()
+          pwa_headers = set(re.findall(r'setRequestHeader\(\s*"([^"]+)"', pwa_api))
+          fw_headers  = set(re.findall(r'http\.header\(\s*"([^"]+)"', fw_ota))
+          contract = {"X-Expected-SHA256", "X-Signature", "X-Firmware-Version"}
+          for h in sorted(contract):
+              if h not in pwa_headers:
+                  print(f"FAIL: PWA no longer sends OTA header {h}")
+                  sys.exit(1)
+              if h not in fw_headers:
+                  print(f"FAIL: firmware no longer reads OTA header {h}")
+                  sys.exit(1)
+          print(f"PASS: OTA header contract intact — {sorted(contract)}")
+
+          # ---- 4. [P1-7] Legacy manifest must not declare mutable authority ----
+          legacy = open('pwa/public/firmware/manifest.json').read()
+          if 'releases/latest' in legacy and '"canonicalReleaseSource"' in legacy:
+              print("FAIL: legacy manifest still declares the mutable releases/latest as canonical authority")
+              sys.exit(1)
+          if json.loads(legacy).get('productionOtaAuthority') != 'none':
+              print("FAIL: legacy manifest must declare productionOtaAuthority=none (tag-pinned resolver is the only authority)")
+              sys.exit(1)
+          print("PASS: legacy manifest declares productionOtaAuthority=none (no 'latest' ambiguity)")
           PY

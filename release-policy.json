@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "authorizedProductionTag": "v1.9.3",
+  "authorizedProductionVersion": "1.9.3",
+  "firmwareRepository": "desvandi/PLTSMonitoring_Firmware-Backend",
+  "policy": {
+    "productionTagImmutable": true,
+    "envOverrideAllowedChannel": "staging",
+    "description": "PWA release authority policy [Audit 2026-09-05 re-audit, P1-5]. The authorized production firmware release tag is a POLICY INVARIANT, not an operator choice. A production build whose NEXT_PUBLIC_EXPECTED_FIRMWARE_TAG differs from authorizedProductionTag MUST FAIL (build-time and module-init throw). Overrides are only permitted on the explicit staging channel (NEXT_PUBLIC_RELEASE_CHANNEL=staging). This file is the single source of truth consumed by src/lib/release-policy.ts, scripts/validate-production-config.mjs, and CI gates."
+  }
+}

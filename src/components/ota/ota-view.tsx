@@ -23,6 +23,7 @@ import { api } from '@/lib/api';
 import { readSysConfig } from '@/lib/sysConfig';
 import {
   resolveAuthorizedRelease,
+  resolveAuthorizedReleaseFresh,
   EXPECTED_FIRMWARE_TAG,
   type ReleaseResolution,
   type CanonicalRelease,
@@ -158,11 +159,17 @@ export function OtaView() {
   };
 
   // [Audit 2026-09-04] Push canonical release to device:
-  // 1. Fetch canonical release identity (version, SHA, release URL)
-  // 2. Download modular-firmware.bin from GitHub Release
-  // 3. Download modular-firmware.bin.sig (Ed25519 hex signature)
-  // 4. Compute SHA-256 client-side, verify against canonical release
-  // 5. Upload to device with X-Expected-SHA256 + X-Signature + X-Firmware-Version
+  // 0. [Audit 2026-09-05 re-audit, P2 hardening] FINAL AUTHORIZATION STEP —
+  //    re-resolve the authorized release FRESH (cache bypassed). A destructive
+  //    OTA action must never act on a stale cached identity:
+  //      resolve → validate → SHA verify → signature verify → upload
+  //    If the authorized identity changed since the operator fetched it
+  //    (e.g. release re-published), the upload ABORTS and the operator must
+  //    re-fetch.
+  // 1. Download modular-firmware.bin from the authorized release assets
+  // 2. Download modular-firmware.bin.sig (Ed25519 hex signature)
+  // 3. Compute SHA-256 client-side, verify against the fresh authorized identity
+  // 4. Upload to device with X-Expected-SHA256 + X-Signature + X-Firmware-Version
   const handlePushCanonical = async () => {
     if (!canonicalRelease) {
       toast.error('Canonical release not loaded');
@@ -170,17 +177,39 @@ export function OtaView() {
     }
     setPushingCanonical(true);
     setPushProgress(0);
-    setPushStatus(`Resolving authorized release ${EXPECTED_FIRMWARE_TAG}…`);
+    setPushStatus(`Re-authorizing release ${EXPECTED_FIRMWARE_TAG} (fresh resolve, cache bypassed)…`);
     try {
+      // 0. FINAL authorization step: fresh resolve (never a cached identity).
+      const fresh = await resolveAuthorizedReleaseFresh();
+      if (!fresh.ok) {
+        throw new Error(
+          `Authorization re-check failed (fail-closed): ${fresh.message}`,
+        );
+      }
+      // Identity drift guard: the release the operator saw must still be the
+      // release being uploaded. A changed SHA/commit aborts the push.
+      if (
+        fresh.release.firmwareSha256 !== canonicalRelease.firmwareSha256 ||
+        fresh.release.gitCommit !== canonicalRelease.gitCommit ||
+        fresh.release.version !== canonicalRelease.version
+      ) {
+        throw new Error(
+          `Authorized release identity changed since it was fetched ` +
+            `(v${canonicalRelease.version} → v${fresh.release.version}). ` +
+            `Upload aborted — press "Fetch Authorized Release" again and review the new identity.`,
+        );
+      }
+      const release: CanonicalRelease = fresh.release;
+
       // 1. Download firmware binary from the AUTHORIZED release assets
       //    (asset URLs validated present by resolveAuthorizedRelease — no
       //    URL guessing from the mutable "latest" pointer).
-      const binResp = await fetch(canonicalRelease.firmwareUrl);
+      const binResp = await fetch(release.firmwareUrl);
       if (!binResp.ok) throw new Error(`Download failed: HTTP ${binResp.status}`);
       const binBlob = await binResp.blob();
 
       // 2. Download Ed25519 signature (hex text, 128 chars)
-      const sigResp = await fetch(canonicalRelease.signatureUrl);
+      const sigResp = await fetch(release.signatureUrl);
       if (!sigResp.ok) throw new Error(`Signature download failed: HTTP ${sigResp.status}`);
       const signature = (await sigResp.text()).trim();
 
@@ -192,10 +221,10 @@ export function OtaView() {
         .map((b) => b.toString(16).padStart(2, '0'))
         .join('');
 
-      // 4. Verify SHA matches the authorized release
-      if (hashHex !== canonicalRelease.firmwareSha256) {
+      // 4. Verify SHA matches the FRESH authorized identity
+      if (hashHex !== release.firmwareSha256) {
         throw new Error(
-          `SHA-256 mismatch: computed ${hashHex.slice(0, 16)}… != expected ${canonicalRelease.firmwareSha256.slice(0, 16)}…`,
+          `SHA-256 mismatch: computed ${hashHex.slice(0, 16)}… != expected ${release.firmwareSha256.slice(0, 16)}…`,
         );
       }
 
@@ -212,25 +241,25 @@ export function OtaView() {
       if (!/^[0-9a-f]{64}$/i.test(hashHex)) {
         throw new Error('Internal error: computed SHA-256 has invalid hex format');
       }
-      if (!/^\d+\.\d+\.\d+$/.test(canonicalRelease.version)) {
+      if (!/^\d+\.\d+\.\d+$/.test(release.version)) {
         throw new Error(
-          `Invalid firmware version format: "${canonicalRelease.version}" is not SemVer`,
+          `Invalid firmware version format: "${release.version}" is not SemVer`,
         );
       }
 
       // 5. Upload to device with production OTA headers
-      setPushStatus(`Uploading v${canonicalRelease.version} to device…`);
+      setPushStatus(`Uploading v${release.version} to device…`);
       const file = new File([binBlob], 'modular-firmware.bin', { type: 'application/octet-stream' });
       const result = await api.otaUpload(file, (pct) => setPushProgress(pct), {
         sha256: hashHex,
         signature,
-        version: canonicalRelease.version,
+        version: release.version,
       });
 
-      toast.success(`OTA complete: device now running v${result.newVersion ?? canonicalRelease.version}`);
+      toast.success(`OTA complete: device now running v${result.newVersion ?? release.version}`);
       qc.invalidateQueries({ queryKey: ['version'] });
       qc.invalidateQueries({ queryKey: ['ota-history'] });
-      setPushStatus(`Device updated to v${result.newVersion ?? canonicalRelease.version}`);
+      setPushStatus(`Device updated to v${result.newVersion ?? release.version}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unknown error';
       toast.error(`Canonical OTA failed: ${msg}`);

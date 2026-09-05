@@ -14,8 +14,10 @@ import {
   EXPECTED_FIRMWARE_TAG,
   getCanonicalRelease,
   resolveAuthorizedRelease,
+  resolveAuthorizedReleaseFresh,
   verifyFirmwareSha256,
 } from "@/lib/release-identity";
+import { AUTHORIZED_PRODUCTION_TAG } from "@/lib/release-policy";
 
 const REPO = "desvandi/PLTSMonitoring_Firmware-Backend";
 const TAG_URL = `https://api.github.com/repos/${REPO}/releases/tags/${EXPECTED_FIRMWARE_TAG}`;
@@ -197,6 +199,53 @@ describe("resolveAuthorizedRelease — authority policy (P0 PWA-01)", () => {
     if (res.ok) return;
     expect(res.code).toBe("GITHUB_API_UNREACHABLE");
     expect(await getCanonicalRelease()).toBeNull();
+  });
+});
+
+describe("resolveAuthorizedReleaseFresh — final OTA authorization step (P2 hardening)", () => {
+  it("EXPECTED_FIRMWARE_TAG equals the committed release policy invariant (P1-5)", () => {
+    expect(EXPECTED_FIRMWARE_TAG).toBe(AUTHORIZED_PRODUCTION_TAG);
+  });
+
+  it("bypasses the display cache: a fresh resolve re-fetches identity, a cached one does not", async () => {
+    const fetchMock = makeFetch();
+    vi.stubGlobal("fetch", fetchMock);
+
+    // First resolve: network round-trips (latest + tag + manifest).
+    const first = await resolveAuthorizedRelease();
+    expect(first.ok).toBe(true);
+    const callsAfterFirst = fetchMock.mock.calls.length;
+    expect(callsAfterFirst).toBeGreaterThanOrEqual(3);
+
+    // Second resolve within TTL: served from cache — no new fetch calls.
+    const cached = await resolveAuthorizedRelease();
+    expect(cached.ok).toBe(true);
+    expect(fetchMock.mock.calls.length).toBe(callsAfterFirst);
+
+    // FRESH resolve: MUST re-fetch even though the cache is warm — the
+    // destructive OTA path may never act on a stale cached identity.
+    const fresh = await resolveAuthorizedReleaseFresh();
+    expect(fresh.ok).toBe(true);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterFirst);
+    if (fresh.ok) {
+      expect(fresh.release.firmwareSha256).toBe(SHA);
+      expect(fresh.release.gitCommit).toBe(COMMIT);
+    }
+  });
+
+  it("fresh resolve fails closed when the release disappears (404)", async () => {
+    // Warm the cache with a healthy release…
+    vi.stubGlobal("fetch", makeFetch());
+    const warm = await resolveAuthorizedRelease();
+    expect(warm.ok).toBe(true);
+
+    // …then the release is gone (e.g. un-published). The fresh resolve must
+    // FAIL CLOSED instead of reusing the warm cache for an OTA upload.
+    vi.stubGlobal("fetch", makeFetch({ tagStatus: 404, latestTag: "v1.8.0" }));
+    const fresh = await resolveAuthorizedReleaseFresh();
+    expect(fresh.ok).toBe(false);
+    if (fresh.ok) return;
+    expect(fresh.code).toBe("EXPECTED_RELEASE_NOT_PUBLISHED");
   });
 });
 
