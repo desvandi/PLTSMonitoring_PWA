@@ -17,6 +17,24 @@ export function fmtA(v: number | null | undefined, digits = 2): string {
   return `${v.toFixed(digits)} A`;
 }
 
+/**
+ * [v1.9.0 / DYNAMIC-GAIN] Dynamic precision current formatter.
+ * - |I| < 10 A  → 2 decimal places (e.g., "1.25 A" — standby precision)
+ * - |I| < 100 A → 1 decimal place  (e.g., "45.3 A" — normal load)
+ * - |I| >= 100 A → 0 decimal places (e.g., "125 A" — peak load, no noise)
+ *
+ * This adapts to the INA219 dynamic gain switching: in ±80mV mode (standby),
+ * the sensor has 10µV resolution (0.013A at 0.75mΩ shunt), so 2 decimals is
+ * honest. In ±160mV mode (peak), the reading is noisier per-bit, so 0 decimals
+ * avoids false precision.
+ */
+export function fmtADynamic(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "N/A";
+  const abs = Math.abs(v);
+  const digits = abs < 10 ? 2 : abs < 100 ? 1 : 0;
+  return `${v.toFixed(digits)} A`;
+}
+
 export function fmtW(v: number | null | undefined, digits = 1): string {
   if (v == null || !Number.isFinite(v)) return "N/A";
   return `${v.toFixed(digits)} W`;

@@ -111,6 +111,31 @@ export function BatteryView() {
         <MeasurementCard label={t('battery.voltage')} measurement={b.voltage} icon={Battery} showFreshness />
         <MeasurementCard label={t('battery.current')} measurement={b.current} format="current" icon={Zap} />
         <MeasurementCard label={t('battery.power')} measurement={b.power} format="power" icon={Activity} />
+        {/* [v1.9.0 / DYNAMIC-GAIN] PGA mode indicator — shows which INA219 gain
+            range is active. "80mV" = high-resolution standby (1-100A),
+            "160mV" = peak load mode (100-150A). Absent on <= v1.8.x firmware. */}
+        {b.pgaMode && (
+          <Card className="border-border/60">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="rounded-lg bg-muted/50 p-1.5">
+                  <Zap className="w-3.5 h-3.5 text-status-info" />
+                </div>
+                <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                  INA219 PGA
+                </span>
+              </div>
+              <div className="text-xl font-mono font-semibold">
+                {b.pgaMode}
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-1">
+                {b.pgaMode === '160mV'
+                  ? 'Peak load mode (100-150A range)'
+                  : 'High-res standby (1-100A range)'}
+              </p>
+            </CardContent>
+          </Card>
+        )}
         <Card className="border-border/60">
           <CardContent className="p-4">
             <div className="flex items-center gap-2 mb-2">
