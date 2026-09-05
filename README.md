@@ -66,7 +66,7 @@ PWA (Progressive Web App) frontend untuk sistem monitoring PLTS 48V LiFePO4. Dib
           │                  │
     ┌─────┴──────────────────┴─────┐
     │           ESP32              │
-    │    (firmware v1.9.2)         │
+    │    (firmware v1.9.3)         │
     └──────────────────────────────┘
 ```
 
@@ -158,7 +158,7 @@ PLTSMonitoring_PWA/
 │
 ├── public/
 │   ├── firmware/
-│   │   └── manifest.json         # ESP Web Tools manifest (v1.9.2)
+│   │   └── manifest.json         # ESP Web Tools manifest (v1.9.3)
 │   ├── vendor/
 │   │   └── esp-web-tools/        # Self-hosted ESP Web Tools (10.4.0)
 │   ├── icon-192.png
@@ -196,8 +196,8 @@ PLTSMonitoring_PWA/
 - **Energy analytics** — charge/discharge Wh, EFC, round-trip efficiency
 - **Dynamic precision** — `fmtADynamic()`: 2 desimal <10A, 1 <100A, 0 ≥100A
 
-### OTA Update (v1.9.2)
-- **Push Canonical Release** — fetch GitHub Release → download binary + sig → verify SHA → upload
+### OTA Update (v1.9.2+; canonical release identity v1.9.3)
+- **Push Canonical Release** — fetch GitHub Release → download binary + sig → verify SHA → upload. Sejak firmware v1.9.3 build-nya reproducible (SHA byte-identik per source commit), sehingga SHA canonical release kini juga identik dengan biner yang diuji di hardware acceptance.
 - **Production OTA headers** — `X-Expected-SHA256` + `X-Signature` + `X-Firmware-Version`
 - **OTA history** — GAS OTA_LOG integration, lifecycle events (ACCEPTED → ACTIVATED)
 - **Manual upload** — development mode .bin file upload
@@ -396,7 +396,7 @@ Jika `NEXT_PUBLIC_DEMO_MODE=true`, PWA menggunakan mock data (`src/lib/mockStore
    ↓
 3. PWA displays release info (version, SHA, git commit, URL)
    ↓
-4. User klik "Push v1.9.2 to Device"
+4. User klik "Push Release to Device" (contoh: v1.9.3)
    ↓
 5. PWA downloads modular-firmware.bin from GitHub Release
    ↓
@@ -409,7 +409,7 @@ Jika `NEXT_PUBLIC_DEMO_MODE=true`, PWA menggunakan mock data (`src/lib/mockStore
    Headers:
      X-Expected-SHA256: <64 hex chars>
      X-Signature: <128 hex chars (64 bytes Ed25519)>
-     X-Firmware-Version: 1.9.2
+     X-Firmware-Version: 1.9.3
    ↓
 9. ESP32 verifies:
    - Streaming SHA-256 == X-Expected-SHA256
@@ -551,7 +551,7 @@ npm run build
 **Fix:**
 1. Gunakan "Push Canonical Release" card (bukan manual upload)
 2. Klik "Fetch Latest Release" dulu → verifikasi release info muncul
-3. Klik "Push v1.9.2 to Device" → PWA akan download + verify SHA + upload dengan headers
+3. Klik "Push Release to Device" → PWA akan download + verify SHA + upload dengan headers
 
 ### PGA mode indicator tidak muncul
 
@@ -592,7 +592,11 @@ npm run build
 
 ## 13. Changelog
 
-### v1.9.2 (Current)
+### v1.9.3 (Current)
+- **Firmware manifest sync** — `public/firmware/manifest.json` version 1.9.3 (parity dengan firmware repo)
+- **Reproducible build support** — firmware v1.9.3 embed identitas build deterministik (SOURCE_DATE_EPOCH); SHA-256 canonical release kini stabil per source commit, memperkuat `verifyFirmwareSha256()` (REL-03/REL-04 di repo firmware CLOSED)
+
+### v1.9.2
 - **INA219 Dynamic PGA UI** — PGA mode indicator card ("80mV"/"160mV")
 - **Chart ranges updated** — CurrentChart ±200A, PowerChart ±10000W
 - **Dynamic precision** — `fmtADynamic()`: 2 decimals <10A, 1 <100A, 0 ≥100A
