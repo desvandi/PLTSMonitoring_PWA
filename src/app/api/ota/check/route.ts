@@ -6,9 +6,12 @@ import { ok, fail, unauthorized } from '@/lib/apiResponse';
 export const runtime = 'nodejs';
 
 // POST /api/ota/check — check if a firmware update is available.
-// [self-review] In production (mock disabled), fetch the canonical release
-// identity from the firmware repo's GitHub Releases API so the PWA reports
-// the REAL latest version + SHA-256, not a mock value.
+// [self-review] In production (mock disabled), resolve the AUTHORIZED
+// release identity from the firmware repo's GitHub Releases API so the PWA
+// reports the REAL authorized version + SHA-256, not a mock value.
+// [P0 PWA-01 fix 2026-09-05] Authority is the pinned EXPECTED tag (immutable,
+// release-tag-protection ACTIVE) — `releases/latest` is consulted ONLY for
+// mismatch detection and is NEVER a source of OTA identity.
 export async function POST(req: NextRequest) {
   const auth = await requireAuth();
   if (!auth.ok) return unauthorized(auth.message);
@@ -28,21 +31,28 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Production: fetch canonical release from GitHub Releases API.
+  // Production: resolve the AUTHORIZED release (by immutable tag).
   try {
-    const { getCanonicalRelease } = await import('@/lib/release-identity');
-    const release = await getCanonicalRelease();
-    if (!release) {
+    const { resolveAuthorizedRelease } = await import('@/lib/release-identity');
+    const res = await resolveAuthorizedRelease();
+    if (!res.ok) {
+      // Fail-closed: the authorized release cannot be established. Report
+      // the policy state so the UI can explain WHY OTA is blocked.
       return ok(
         {
           available: false,
           latestVersion: null,
           currentVersion: null,
+          expectedTag: res.expectedTag,
+          latestTag: res.latestTag,
+          latestMismatch: res.latestTag !== null && res.latestTag !== res.expectedTag,
+          blockedReason: res.code,
           source: 'github-releases',
         },
-        'No canonical release found (GitHub Releases API unreachable or no releases)',
+        `Authorized release ${res.expectedTag} unavailable (${res.code}) — production OTA stays blocked (fail-closed)`,
       );
     }
+    const release = res.release;
     return ok(
       {
         available: true,
@@ -53,13 +63,16 @@ export async function POST(req: NextRequest) {
         releaseId: release.releaseId,
         releaseUrl: release.releaseUrl,
         manifestUrl: release.manifestUrl,
+        expectedTag: release.expectedTag,
+        latestTag: release.latestTag,
+        latestMismatch: release.latestMismatch,
         source: 'github-releases',
       },
-      `Latest firmware: v${release.version} (canonical GitHub Release)`,
+      `Authorized firmware: v${release.version} (canonical release ${release.expectedTag})`,
     );
   } catch (err) {
     return fail(
-      `Failed to fetch canonical release: ${err instanceof Error ? err.message : 'unknown'}`,
+      `Failed to resolve authorized release: ${err instanceof Error ? err.message : 'unknown'}`,
       502,
     );
   }
