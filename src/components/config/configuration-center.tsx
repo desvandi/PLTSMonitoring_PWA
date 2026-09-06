@@ -1,19 +1,24 @@
 'use client';
 
 // =============================================================================
-// Configuration Center — device + battery + thresholds configuration
+// Configuration Center — device + battery + alarm thresholds configuration
 // -----------------------------------------------------------------------------
-// Brief §64:
-//   - Device: name, site, timezone (operator-editable)
-//   - Battery: capacityAh, nominalV, fullV, lowV, idleCurrentThreshold,
-//     fullChargeCurrentThreshold, fullChargePersistenceSec, telemetryIntervalSec
-//   - Alarm thresholds: voltage low/high, current high, temperature, humidity, SOC
-//   - SOC params: syncOnFullCharge, syncOnVoltage, voltageSyncHysteresisV,
-//     baselineAgingPerMonthPct
-//   - Calibration params: autoZeroAcs712OnBoot, sht31HeaterEnabled
-//   - All mutations require CSRF + requestId (handled in api.ts).
-//   - Versioned: every change bumps config.revision + persists via atomic A/B.
-//   - Export/Import: full config JSON (CRC32-protected) for backup/restore.
+// [PARITY-4 2026-09-06] Every field below is a REAL authoritative contract:
+//   - Device: name, site, timezone → POST /api/config/device (requestId +
+//     transaction journal on the firmware side)
+//   - Battery: capacityAh, fullV, lowV, idleCurrentThreshold,
+//     fullChargeCurrentThreshold, fullChargePersistenceSec,
+//     telemetryIntervalSec → POST /api/config (canonical command path)
+//   - Alarm thresholds (two-tier): voltageLow/High Warn+Critical,
+//     currentHigh Warn+Critical, temperatureHigh Warn+Critical,
+//     humidityHighWarn, socLow Warn+Critical → POST /api/config — the SAME
+//     field names the firmware persists in NVS "plts_alarm" and evaluates
+//     live in AnomalyDetector. Served back flat + nested `alarmThresholds`.
+//   - Export/Import: full config JSON (CRC32-protected; import carries an
+//     X-Request-Id header so the firmware journals the transaction).
+//   REMOVED (feature ghosts, registry F-SOC-002/F-CAL-002): the read-only
+//   `socParams` and `calibrationParams` cards — no authoritative firmware
+//   implementation ever existed; they only rendered from demo mock data.
 // =============================================================================
 
 import { useRef, useState } from 'react';
@@ -26,12 +31,38 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Settings, Battery, AlertTriangle, FileDown, FileUp, Save } from 'lucide-react';
 import { formatDateTime } from '@/lib/format';
 import { toast } from 'sonner';
 import { deviceConfigOf } from '@/lib/config-shape';
+
+// [PARITY-4] Two-tier alarm threshold fields — EXACT names of the firmware
+// canonicalizer whitelist (config.update) and the NVS plts_alarm store.
+const ALARM_FIELDS = [
+  'voltageLowWarn', 'voltageLowCritical',
+  'voltageHighWarn', 'voltageHighCritical',
+  'currentHighWarn', 'currentHighCritical',
+  'temperatureHighWarn', 'temperatureHighCritical',
+  'humidityHighWarn',
+  'socLowWarn', 'socLowCritical',
+] as const;
+
+type AlarmField = (typeof ALARM_FIELDS)[number];
+
+const ALARM_META: { field: AlarmField; label: string; unit: string; step: string }[] = [
+  { field: 'voltageLowWarn', label: 'Voltage Low Warn', unit: 'V', step: '0.1' },
+  { field: 'voltageLowCritical', label: 'Voltage Low Critical', unit: 'V', step: '0.1' },
+  { field: 'voltageHighWarn', label: 'Voltage High Warn', unit: 'V', step: '0.1' },
+  { field: 'voltageHighCritical', label: 'Voltage High Critical', unit: 'V', step: '0.1' },
+  { field: 'currentHighWarn', label: 'Current High Warn (|I|)', unit: 'A', step: '1' },
+  { field: 'currentHighCritical', label: 'Current High Critical (|I|)', unit: 'A', step: '1' },
+  { field: 'temperatureHighWarn', label: 'Temp High Warn', unit: '°C', step: '0.5' },
+  { field: 'temperatureHighCritical', label: 'Temp High Critical', unit: '°C', step: '0.5' },
+  { field: 'humidityHighWarn', label: 'Humidity High Warn', unit: '%', step: '1' },
+  { field: 'socLowWarn', label: 'SOC Low Warn', unit: '%', step: '1' },
+  { field: 'socLowCritical', label: 'SOC Low Critical', unit: '%', step: '1' },
+];
 
 export function ConfigurationCenter() {
   const { t } = useLanguage();
@@ -50,6 +81,9 @@ export function ConfigurationCenter() {
   const [fullChargeCurrentThreshold, setFullChargeCurrentThreshold] = useState('');
   const [fullChargePersistenceSec, setFullChargePersistenceSec] = useState('');
   const [telemetryIntervalSec, setTelemetryIntervalSec] = useState('');
+  // [PARITY-4] two-tier alarm threshold form state (authoritative NVS
+  // plts_alarm on the device; demo mock mirrors the same defaults).
+  const [alarmForm, setAlarmForm] = useState<Record<string, string>>({});
 
   // [AUDIT 2026-08-28 G4] Pola resmi React "adjust state during render":
   // form disinkronkan dari configData SEKALI per identitas data (bukan via
@@ -73,6 +107,15 @@ export function ConfigurationCenter() {
     setFullChargeCurrentThreshold(String(c?.fullChargeCurrentThreshold ?? ''));
     setFullChargePersistenceSec(String(c?.fullChargePersistenceSec ?? ''));
     setTelemetryIntervalSec(String(c?.telemetryIntervalSec ?? ''));
+    // [PARITY-4] sync alarm form from the nested readback (flat and nested
+    // are served with identical values by the firmware).
+    const at = (c as { alarmThresholds?: Record<string, number> } | undefined)?.alarmThresholds;
+    const nextForm: Record<string, string> = {};
+    for (const k of ALARM_FIELDS) {
+      const v = at?.[k];
+      nextForm[k] = v != null && Number.isFinite(v) ? String(v) : '';
+    }
+    setAlarmForm(nextForm);
   }
 
   const saveDevice = async () => {
@@ -109,6 +152,32 @@ export function ConfigurationCenter() {
     try {
       await api.updateConfig(payload);
       toast.success('Battery configuration saved');
+      qc.invalidateQueries({ queryKey: ['config'] });
+      qc.invalidateQueries({ queryKey: ['status'] });
+    } catch (e) {
+      toast.error(`Save failed: ${e instanceof Error ? e.message : 'unknown'}`);
+    }
+  };
+
+  // [PARITY-4] Alarm thresholds — editable, flat field names EXACTLY as the
+  // firmware canonicalizer whitelists them (config.update). Ranges + tier
+  // order are validated by the device (and mirrored in demo mode by the
+  // mock). Only numeric values the operator actually filled are sent.
+  const saveAlarmThresholds = async () => {
+    const payload: Record<string, number> = {};
+    for (const k of ALARM_FIELDS) {
+      const raw = alarmForm[k] ?? '';
+      if (raw === '') continue;
+      const f = parseFloat(raw);
+      if (!Number.isNaN(f)) payload[k] = f;
+    }
+    if (Object.keys(payload).length === 0) {
+      toast.error('No values to save');
+      return;
+    }
+    try {
+      await api.updateConfig(payload);
+      toast.success('Alarm thresholds saved — applied live by the device');
       qc.invalidateQueries({ queryKey: ['config'] });
       qc.invalidateQueries({ queryKey: ['status'] });
     } catch (e) {
@@ -363,8 +432,9 @@ export function ConfigurationCenter() {
         </CardContent>
       </Card>
 
-      {/* Alarm thresholds — READ-ONLY display (editing via separate API) */}
-      {cfg.alarmThresholds && (
+      {/* Alarm thresholds — EDITABLE (authoritative device config since
+          PARITY-4; hidden honestly on firmware that does not serve them) */}
+      {cfg.alarmThresholds ? (
         <Card className="border-border/60">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm flex items-center gap-2">
@@ -372,69 +442,52 @@ export function ConfigurationCenter() {
               {t('config.alarm_thresholds')}
             </CardTitle>
             <CardDescription className="text-xs">
-              Thresholds applied by AnomalyDetector + AlarmRegistry. Edit via MQTT or REST API.
+              {t('config.alarm_thresholds_note')}
             </CardDescription>
           </CardHeader>
-          <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-            {[
-              { label: 'Voltage Low Warn', value: cfg.alarmThresholds.voltageLowWarn, unit: 'V' },
-              { label: 'Voltage Low Critical', value: cfg.alarmThresholds.voltageLowCritical, unit: 'V' },
-              { label: 'Voltage High Warn', value: cfg.alarmThresholds.voltageHighWarn, unit: 'V' },
-              { label: 'Voltage High Critical', value: cfg.alarmThresholds.voltageHighCritical, unit: 'V' },
-              { label: 'Current High Warn', value: cfg.alarmThresholds.currentHighWarn, unit: 'A' },
-              { label: 'Current High Critical', value: cfg.alarmThresholds.currentHighCritical, unit: 'A' },
-              { label: 'Temp High Warn', value: cfg.alarmThresholds.temperatureHighWarn, unit: '°C' },
-              { label: 'Temp High Critical', value: cfg.alarmThresholds.temperatureHighCritical, unit: '°C' },
-              { label: 'Humidity High Warn', value: cfg.alarmThresholds.humidityHighWarn, unit: '%' },
-              { label: 'SOC Low Warn', value: cfg.alarmThresholds.socLowWarn, unit: '%' },
-              { label: 'SOC Low Critical', value: cfg.alarmThresholds.socLowCritical, unit: '%' },
-            ].map((row, i) => (
-              <div key={i} className="flex flex-col gap-1">
-                <span className="text-muted-foreground uppercase tracking-wider text-[10px]">
-                  {row.label}
-                </span>
-                <span className="font-mono font-semibold">
-                  {row.value ?? '—'} {row.unit}
-                </span>
+          <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {ALARM_META.map((m) => (
+              <div key={m.field} className="space-y-1">
+                <Label className="text-[10px] uppercase tracking-wider">
+                  {m.label} ({m.unit})
+                </Label>
+                <Input
+                  type="number"
+                  step={m.step}
+                  data-testid={`alarm-input-${m.field}`}
+                  value={alarmForm[m.field] ?? ''}
+                  onChange={(e) =>
+                    setAlarmForm((prev) => ({ ...prev, [m.field]: e.target.value }))}
+                />
               </div>
             ))}
+            <div className="md:col-span-4 flex items-center gap-2 mt-2">
+              <Button
+                size="sm"
+                data-testid="alarm-save-button"
+                onClick={saveAlarmThresholds}
+              >
+                <Save className="w-3 h-3 mr-1" />
+                {t('common.save')}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card className="border-border/60">
+          <CardContent className="p-3 text-xs text-muted-foreground flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-muted-foreground shrink-0" />
+            <span>
+              {t('config.alarm_unavailable')}
+            </span>
           </CardContent>
         </Card>
       )}
 
-      {/* SOC params + Calibration params — read-only */}
-      {cfg.socParams && (
-        <Card className="border-border/60">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm flex items-center gap-2">
-              <Battery className="w-4 h-4 text-primary" />
-              {t('config.soc_params')}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex items-center justify-between text-xs">
-              <span>Sync on full charge</span>
-              <Switch checked={!!cfg.socParams.syncOnFullCharge} disabled />
-            </div>
-            <div className="flex items-center justify-between text-xs">
-              <span>Sync on voltage</span>
-              <Switch checked={!!cfg.socParams.syncOnVoltage} disabled />
-            </div>
-            <div className="flex items-center justify-between text-xs">
-              <span>Voltage sync hysteresis</span>
-              <span className="font-mono">
-                {cfg.socParams.voltageSyncHysteresisV?.toFixed(2) ?? '—'} V
-              </span>
-            </div>
-            <div className="flex items-center justify-between text-xs">
-              <span>Baseline aging per month</span>
-              <span className="font-mono">
-                {cfg.socParams.baselineAgingPerMonthPct?.toFixed(2) ?? '—'} %
-              </span>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {/* [PARITY-4 REMOVED] SOC params card deleted — socParams was a
+          mockStore-only ghost (no authoritative firmware implementation,
+          registry F-SOC-002). The REAL SOC sync knobs live in the Battery
+          card: fullChargeCurrentThreshold + fullChargePersistenceSec. */}
 
       {/* Export / Import */}
       <Card className="border-border/60">

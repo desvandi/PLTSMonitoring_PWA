@@ -317,6 +317,19 @@ export function EmergencyControlView() {
                       {t('emergency.cfg_sensorFailPolicy_hint')}
                     </p>
                   )}
+                  {/* [PARITY-4 P1-11] The genset overcurrent threshold guards a
+                      RESERVED hardware channel (2nd ACS712, GPIO32 — registry
+                      F-GEN-001). The config field is part of the GAS/firmware
+                      contract, but the sensor is not present: label it so the
+                      operator never believes the channel is live. */}
+                  {f.key === 'iAcGenOverA' && (
+                    <p
+                      data-testid="genset-reserved-hint"
+                      className="text-[11px] leading-relaxed text-muted-foreground"
+                    >
+                      {t('emergency.cfg_iAcGenOverA_hint')}
+                    </p>
+                  )}
                 </div>
               ))}
             </div>

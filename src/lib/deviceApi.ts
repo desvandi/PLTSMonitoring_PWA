@@ -106,10 +106,14 @@ async function deviceRequest<T>(
     body?: unknown;
     signal?: AbortSignal;
     skipCsrf?: boolean;
+    // [PARITY-4] extra request headers (e.g. X-Request-Id on config import —
+    // the import body is CRC32-verified by the device and cannot carry the
+    // transaction id inline).
+    headers?: Record<string, string>;
   } = {},
 ): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
-  const headers: Record<string, string> = { Accept: "application/json" };
+  const headers: Record<string, string> = { Accept: "application/json", ...opts.headers };
   if (opts.body !== undefined && !(opts.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
   }
@@ -306,16 +310,34 @@ export const deviceApi: DeviceApiClient = {
       body: { token, confirm: "RESET" },
     }),
 
+  // [PARITY-4 2026-09-06] Transaction identity parity (audit P1): device
+  // config mutations now carry requestId on EVERY path — the firmware
+  // handleDevicePost already ran the canonical pipeline (journal + dedup),
+  // but a body without requestId skipped it entirely.
   updateDevice: (opts) =>
-    deviceRequest<{ updated: boolean }>("/api/config/device", { method: "POST", body: opts }),
+    deviceRequest<{ updated: boolean }>("/api/config/device", {
+      method: "POST",
+      body: { ...opts, requestId: generateRequestId() },
+    }),
   changePassword: (current, next) =>
     deviceRequest<{ changed: boolean }>("/api/config/password", {
       method: "POST",
-      body: { current, next },
+      // [PARITY-4] the firmware joins password changes to the canonical
+      // config.password command path (journal + dedup).
+      body: { current, next, requestId: generateRequestId() },
     }),
   exportConfig: () => deviceRequest<{ config: SystemConfig }>("/api/config/export"),
+  // [PARITY-4] Config import: requestId rides the X-Request-Id HEADER. The
+  // body is the exported CRC32-verified backup — injecting a key would
+  // break the device's Utils::verifyCRC. The firmware journals the
+  // transaction with sha256(raw-body) as the command hash: same bytes +
+  // same id = replayed ACK; different bytes + same id = 409 CONFLICT.
   importConfig: (cfg) =>
-    deviceRequest<{ imported: boolean }>("/api/config/import", { method: "POST", body: cfg }),
+    deviceRequest<{ imported: boolean }>("/api/config/import", {
+      method: "POST",
+      body: cfg,
+      headers: { "X-Request-Id": generateRequestId() },
+    }),
 
   // ---------- 8-Channel Relay (v1.8.0) ----------
   // [Brief §6] All relay mutations use IDEMPOTENT_STATE (on/off), NOT toggle.
