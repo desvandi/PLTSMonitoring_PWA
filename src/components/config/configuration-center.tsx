@@ -16,7 +16,7 @@
 //   - Export/Import: full config JSON (CRC32-protected) for backup/restore.
 // =============================================================================
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useConfig, useStatus } from '@/hooks/useApi';
 import { api } from '@/lib/api';
 import { useLanguage } from '@/components/providers/language-provider';
@@ -129,6 +129,41 @@ export function ConfigurationCenter() {
       toast.success('Config exported');
     } catch (e) {
       toast.error(`Export failed: ${e instanceof Error ? e.message : 'unknown'}`);
+    }
+  };
+
+  // [PARITY-3 2026-09-06] The Import button was disabled ("Not implemented
+  // in this build") while BOTH sides of the contract existed: firmware
+  // POST /api/config/import (CRC32-verified, reboot required) and
+  // deviceApi.importConfig — only the UI wiring was missing.
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const [importing, setImporting] = useState(false);
+
+  const importConfig = async (file: File) => {
+    setImporting(true);
+    try {
+      const text = await file.text();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw new Error('File bukan JSON yang valid.');
+      }
+      // Shape check: the device expects the export payload (config object
+      // with batteryConfig/calibration/_crc keys — see ConfigStore.cpp).
+      const obj = parsed as Record<string, unknown>;
+      if (!obj || typeof obj !== 'object' || !('batteryConfig' in obj)) {
+        throw new Error(
+          'Struktur file tidak dikenali — gunakan file hasil Export dari perangkat (harus mengandung kunci batteryConfig).');
+      }
+      await api.importConfig(parsed as Parameters<typeof api.importConfig>[0]);
+      toast.success('Config imported — perangkat butuh REBOOT untuk menerapkan (menu System → Reboot).');
+      qc.invalidateQueries({ queryKey: ['config'] });
+    } catch (e) {
+      toast.error(`Import gagal: ${e instanceof Error ? e.message : 'unknown'}`);
+    } finally {
+      setImporting(false);
+      if (importInputRef.current) importInputRef.current.value = '';
     }
   };
 
@@ -417,9 +452,27 @@ export function ConfigurationCenter() {
             <FileDown className="w-3 h-3 mr-1" />
             {t('common.export')}
           </Button>
-          <Button variant="outline" size="sm" disabled title="Not implemented in this build">
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            data-testid="config-import-file"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void importConfig(f);
+            }}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={importing}
+            data-testid="config-import-button"
+            title="Upload the exported config JSON — device reboot required to apply"
+            onClick={() => importInputRef.current?.click()}
+          >
             <FileUp className="w-3 h-3 mr-1" />
-            {t('common.import')}
+            {importing ? 'Importing…' : t('common.import')}
           </Button>
         </CardContent>
       </Card>

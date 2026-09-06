@@ -58,14 +58,28 @@ export function CalibrationCenter() {
       toast.error('Cannot capture — live voltage is invalid');
       return;
     }
-    // Map: live voltage is "reference"; raw is unknown (operator must read ADC counts)
-    // For convenience, we set reference = live voltage; raw = last raw ADC from status.
-    // NOTE: status.battery.voltage does NOT expose raw ADC counts in the public API.
-    // The operator must enter raw manually OR the firmware must expose it.
-    if (which === 'low') setRefLow(v.toFixed(2));
-    else if (which === 'nominal') setRefNominal(v.toFixed(2));
-    else setRefFull(v.toFixed(2));
-    toast.success(`Captured reference voltage: ${v.toFixed(2)}V (enter raw ADC counts manually)`);
+    // [PARITY-3 2026-09-06] The firmware now exposes the live UNCALIBRATED
+    // reading in GET /api/calibration as `voltageRaw` (volts, pre-3-point
+    // map) — exactly the `raw` value the point routes expect. Prefill BOTH
+    // fields when available; the reference stays the multimeter's job (we
+    // prefill with the live value as a starting hint, the operator corrects
+    // it with the real reference measurement).
+    // Legacy firmware without voltageRaw: raw stays manual (honest note).
+    const rawV = calibration?.voltageRaw;
+    const rawPrefilled = rawV != null && Number.isFinite(rawV);
+    if (which === 'low') {
+      setRefLow(v.toFixed(2));
+      if (rawPrefilled) setRawLow(rawV.toFixed(2));
+    } else if (which === 'nominal') {
+      setRefNominal(v.toFixed(2));
+      if (rawPrefilled) setRawNominal(rawV.toFixed(2));
+    } else {
+      setRefFull(v.toFixed(2));
+      if (rawPrefilled) setRawFull(rawV.toFixed(2));
+    }
+    toast.success(rawPrefilled
+      ? `Captured: reference ${v.toFixed(2)}V (verify with multimeter), raw ${rawV.toFixed(2)}V (live uncalibrated reading)`
+      : `Captured reference voltage: ${v.toFixed(2)}V (enter raw value manually — firmware < PARITY-3)`);
   };
 
   // Submit one voltage calibration point

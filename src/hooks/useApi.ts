@@ -4,6 +4,8 @@ import { useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { isValidInsight } from '@/lib/aiInsights';
+import { fetchGasInsights } from '@/lib/gasEnvelope';
+import { readSysConfig } from '@/lib/sysConfig';
 import { getMqttStatus, hasMqttStatus } from '@/lib/mqtt';
 import { recordEnergySample } from '@/lib/energyHistory';
 
@@ -87,8 +89,24 @@ export function useAiInsights() {
     // [WAVE-7 / PW7-5] Setiap insight diverifikasi terhadap kontrak
     // (advisoryOnly === true, kategori/severity/source sah) sebelum sampai
     // ke UI — sebelumnya validator di lib/aiInsights.ts adalah dead code.
+    // [PARITY-3 2026-09-06] GAS fallback: the device path (/api/insights via
+    // the ESP32 HMAC proxy) only exists in LAN mode — a cloud-only profile
+    // (no NEXT_PUBLIC_API_BASE_URL) previously got a permanent 503 from the
+    // PWA's own route. GAS now serves action=INSIGHTS directly; call it with
+    // the active device profile (same transport as LATEST/EMERGENCY_LOG).
     queryFn: async () => {
-      const envelope = await api.insights();
+      let envelope;
+      try {
+        envelope = await api.insights();
+      } catch (deviceErr) {
+        const config = readSysConfig();
+        const device = config
+          ? (config.devices.find((d) => d.device_id === config.active_device_id) ?? config.devices[0])
+          : undefined;
+        if (!device) throw deviceErr;
+        envelope = await fetchGasInsights(
+          device.gas_webapp_url, device.auth_token, device.device_id);
+      }
       const all = envelope.insights ?? [];
       const valid = all.filter(isValidInsight);
       return { ...envelope, insights: valid };

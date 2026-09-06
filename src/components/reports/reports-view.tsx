@@ -28,6 +28,8 @@ import {
 import { FileText, Download, RefreshCw } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { fmtWh, fmtPct } from '@/lib/format';
+import { fetchGasDailyReport } from '@/lib/gasEnvelope';
+import { readSysConfig } from '@/lib/sysConfig';
 import { toast } from 'sonner';
 import type { ReportRange, DailyEnergyRecord } from '@/lib/types';
 
@@ -53,9 +55,34 @@ export function ReportsView() {
 
   const { data, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['reports', range, from, to],
-    queryFn: () => api.reports({ range, from, to, format: 'json' }),
+    // [PARITY-3 2026-09-06] GAS DAILY first, device/demo fallback second.
+    // The GAS action has existed since WAVE-4 (aggregating exactly the
+    // telemetry this device uploaded) while this view could only ever serve
+    // the demo mock (or the device's honest 501) — the report feature was
+    // backend-only with no caller. Order: (1) active-device GAS profile →
+    // DAILY; (2) fallback to the existing api.reports path (demo mock / LAN
+    // backend). The source badge keeps the authority visible.
+    queryFn: async (): Promise<{ records: DailyEnergyRecord[]; generatedAt: number; source: 'gas' | 'fallback' }> => {
+      const config = readSysConfig();
+      const device = config
+        ? (config.devices.find((d) => d.device_id === config.active_device_id) ?? config.devices[0])
+        : undefined;
+      if (device) {
+        try {
+          const recs = await fetchGasDailyReport(
+            device.gas_webapp_url, device.auth_token, device.device_id, days);
+          return { records: recs, generatedAt: Date.now(), source: 'gas' };
+        } catch {
+          // Honest GAS unavailability (unconfigured / no rows / network) —
+          // fall through to the existing path, never hard-fail the view.
+        }
+      }
+      const r = await api.reports({ range, from, to, format: 'json' });
+      return { records: r.records, generatedAt: r.generatedAt, source: 'fallback' };
+    },
     staleTime: 5 * 60_000,  // 5 min
   });
+  const reportSource = data?.source ?? 'fallback';
 
   const records: DailyEnergyRecord[] = data?.records ?? [];
 
@@ -77,9 +104,9 @@ export function ReportsView() {
       r.chargeAh, r.dischargeAh,
       r.peakChargeA ?? '', r.peakDischargeA ?? '',
       r.socMin ?? '', r.socMax ?? '',
-      r.alarmCount,
+      r.alarmCount ?? '',
       r.telemetryCompleteness,
-      r.deviceAvailability,
+      r.deviceAvailability ?? '',
     ]);
     const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -102,23 +129,28 @@ export function ReportsView() {
     );
   }
 
-  // Aggregate totals
+  // Aggregate totals (optional fields contribute only when present — GAS
+  // DAILY records honestly omit alarmCount/deviceAvailability).
   const totals = records.reduce(
     (acc, r) => {
       acc.chargeWh += r.chargeWh;
       acc.dischargeWh += r.dischargeWh;
       acc.chargeAh += r.chargeAh;
       acc.dischargeAh += r.dischargeAh;
-      acc.alarmCount += r.alarmCount;
+      acc.alarmCount += r.alarmCount ?? 0;
       acc.completenessSum += r.telemetryCompleteness;
-      acc.availabilitySum += r.deviceAvailability;
+      if (r.deviceAvailability != null) {
+        acc.availabilitySum += r.deviceAvailability;
+        acc.availabilityCount += 1;
+      }
       return acc;
     },
     { chargeWh: 0, dischargeWh: 0, chargeAh: 0, dischargeAh: 0,
-      alarmCount: 0, completenessSum: 0, availabilitySum: 0 },
+      alarmCount: 0, completenessSum: 0, availabilitySum: 0, availabilityCount: 0 },
   );
   const avgCompleteness = records.length > 0 ? totals.completenessSum / records.length : 0;
-  const avgAvailability = records.length > 0 ? totals.availabilitySum / records.length : 0;
+  const avgAvailability = totals.availabilityCount > 0
+    ? totals.availabilitySum / totals.availabilityCount : null;
 
   return (
     <div className="space-y-6">
@@ -207,7 +239,7 @@ export function ReportsView() {
               {t('reports.device_availability')}
             </div>
             <div className="text-lg font-mono font-bold">
-              {fmtPct(avgAvailability * 100)}
+              {avgAvailability != null ? fmtPct(avgAvailability * 100) : '—'}
             </div>
           </CardContent>
         </Card>
@@ -220,8 +252,22 @@ export function ReportsView() {
             <FileText className="w-4 h-4 text-primary" />
             Daily records ({records.length} days)
           </CardTitle>
-          <CardDescription className="text-xs">
-            Aggregated from ESP32-persisted telemetry. Lower completeness → less reliable aggregates.
+          <CardDescription className="text-xs flex items-center gap-2">
+            {/* [PARITY-3] Source badge — GAS DAILY (audit-grade, aggregated
+                server-side from uploaded telemetry) vs fallback (demo mock /
+                LAN backend). Authority must stay visible, never implied. */}
+            <Badge
+              variant="outline"
+              className={
+                reportSource === 'gas'
+                  ? 'text-[9px] border-status-on/30 text-status-on'
+                  : 'text-[9px] border-status-warn/30 text-status-warn'
+              }
+            >
+              {reportSource === 'gas' ? 'GAS DAILY' : 'FALLBACK'}
+            </Badge>
+            Lower completeness → less reliable aggregates. COUNTER_RESET days
+            carry a flagged quality badge.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -247,7 +293,19 @@ export function ReportsView() {
                 <TableBody>
                   {records.map((r) => (
                     <TableRow key={r.date}>
-                      <TableCell className="font-mono text-xs">{r.date}</TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {r.date}
+                        {r.energyQuality === 'COUNTER_RESET' && (
+                          <Badge variant="outline" className="ml-1 text-[8px] h-3.5 px-1 border-status-warn/40 text-status-warn" title="Energy counter reset detected mid-day — this day's energy is partial (honest aggregation, no interpolation)">
+                            RESET
+                          </Badge>
+                        )}
+                        {r.energyQuality === 'PARTIAL' && (
+                          <Badge variant="outline" className="ml-1 text-[8px] h-3.5 px-1 border-status-info/40 text-status-info" title="Low completeness day — aggregates less reliable">
+                            PARTIAL
+                          </Badge>
+                        )}
+                      </TableCell>
                       <TableCell className="text-right font-mono text-xs text-status-on">
                         {fmtWh(r.chargeWh)}
                       </TableCell>
@@ -267,7 +325,7 @@ export function ReportsView() {
                         {r.peakDischargeA != null ? ` ↓${r.peakDischargeA.toFixed(1)}A` : ''}
                       </TableCell>
                       <TableCell className="text-center">
-                        {r.alarmCount > 0 ? (
+                        {r.alarmCount != null && r.alarmCount > 0 ? (
                           <Badge variant="outline" className="text-[9px] border-status-warn/30 text-status-warn">
                             {r.alarmCount}
                           </Badge>

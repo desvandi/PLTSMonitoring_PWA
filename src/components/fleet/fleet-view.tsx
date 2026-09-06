@@ -163,10 +163,14 @@ export function FleetView() {
                         )}
                       </TableCell>
                       <TableCell className="text-right font-mono">
-                        <span className={cn(row.telemetry?.ina219_ok === 'MISSING' && 'text-amber-500')}>
+                        <span className={cn(row.telemetry?.ina219_ok === 'false' && 'text-amber-500')}>
                           {row.telemetry?.i_bat_dc != null ? `${row.telemetry.i_bat_dc.toFixed(2)} A` : '—'}
                         </span>
-                        {row.telemetry?.ina219_ok === 'MISSING' && (
+                        {/* [PARITY-3 2026-09-06 FIX] Dead branch: gasEnvelope maps ina219_ok to
+                            'true' | 'false' | null — the literal 'MISSING' never
+                            occurred, so the "sensor absen" hint could never
+                            render. 'false' is the device's honest report. */}
+                        {row.telemetry?.ina219_ok === 'false' && (
                           <div className="text-[10px] text-amber-500">sensor absen</div>
                         )}
                       </TableCell>

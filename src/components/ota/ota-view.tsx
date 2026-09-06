@@ -96,6 +96,12 @@ async function fetchGasOtaHistory(deviceId: string): Promise<OtaHistoryEntry[] |
     if (!body || body.status !== 'SUCCESS' || !Array.isArray(body.data?.events)) {
       return null;
     }
+    // [PARITY-3 2026-09-06] The modular firmware now feeds the FULL lifecycle
+    // into OtaEvents (GasOtaReporter: ACCEPTED / DOWNLOADING / VERIFIED /
+    // FLASHED / FAILED + terminal ACTIVATED / ROLLBACK). Map intermediate
+    // verbs to 'progress' so an in-flight session is never rendered as
+    // 'failed' (the old 3-way mapping had no home for them).
+    const PROGRESS_EVENTS = new Set(['ACCEPTED', 'DOWNLOADING', 'VERIFIED', 'FLASHED']);
     return body.data.events.map((e, i): OtaHistoryEntry => ({
       id: i,
       timestamp: Date.parse(e.timestamp) || Date.now(),
@@ -106,7 +112,9 @@ async function fetchGasOtaHistory(deviceId: string): Promise<OtaHistoryEntry[] |
           ? 'success'
           : e.event === 'ROLLBACK'
             ? 'rollback'
-            : 'failed',
+            : PROGRESS_EVENTS.has(e.event)
+              ? 'progress'
+              : 'failed',
       durationSeconds: 0,
       event: e.event,
       message: e.message,
@@ -290,8 +298,9 @@ export function OtaView() {
       const deviceId = config?.active_device_id ?? config?.device_id ?? '';
       const gasEntries = await fetchGasOtaHistory(deviceId);
       if (gasEntries) return { entries: gasEntries, source: 'gas' };
-      const r = await api.otaHistory();
-      return { entries: r.entries, source: 'fallback' };
+      // [X13b / W13-3] Mock fallback when GAS is unconfigured/unreachable —
+      // the panel must never hard-fail on an offline backend.
+      return api.otaHistory().then((r) => ({ entries: r.entries, source: 'fallback' as const }));
     },
     staleTime: 30_000,
   });
@@ -682,7 +691,9 @@ export function OtaView() {
                               ? 'border-status-on/30 text-status-on'
                               : h.status === 'failed'
                                 ? 'border-status-error/30 text-status-error'
-                                : 'border-status-warn/30 text-status-warn',
+                                : h.status === 'progress'
+                                  ? 'border-status-info/30 text-status-info'
+                                  : 'border-status-warn/30 text-status-warn',
                           )}
                           title={h.message}
                         >
