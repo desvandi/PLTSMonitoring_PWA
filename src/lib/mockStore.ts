@@ -775,7 +775,13 @@ export function getAlarmHistory(): Alarm[] {
 
 export function acknowledgeAlarm(alarmId: string): boolean {
   if (!G.state) return false;
-  const alarm = G.state.alarms.find((a) => a.id === alarmId);
+  // [PARITY-3 2026-09-06] Match by id OR code: the real firmware contract is
+  // POST /api/alarms/{alarmId}/acknowledge where alarmId is the alarm CODE
+  // (AlarmHandlers.cpp registers the per-code route), and alarm-center.tsx
+  // passes alarm.code. The mock previously matched ONLY the mock id
+  // ("mock-battery-1"), so the demo ACK 404'd on the exact request shape
+  // production sends — demo/production contract drift.
+  const alarm = G.state.alarms.find((a) => a.id === alarmId || a.code === alarmId);
   if (!alarm) return false;
   alarm.lifecycle = "ACKNOWLEDGED";
   alarm.acknowledgedAt = Date.now();

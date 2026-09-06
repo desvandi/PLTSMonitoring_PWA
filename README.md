@@ -267,17 +267,27 @@ Buat `.env.local`:
 
 ```bash
 # ESP32 device URL (direct or via Cloudflare Tunnel)
+# [PARITY-3 2026-09-06] env names synchronized with the actual code
+# (src/lib/apiShared.ts, mqtt.ts, release-identity.ts) — the README
+# previously documented NEXT_PUBLIC_GAS_URL / NEXT_PUBLIC_MQTT_BROKER /
+# NEXT_PUBLIC_MQTT_TOPIC which the code never reads.
 NEXT_PUBLIC_API_BASE_URL=http://192.168.1.100
 
-# Backend GAS URL
-NEXT_PUBLIC_GAS_URL=https://script.google.com/macros/s/AKfycb.../exec
+# GAS Insights URL (server-side probe target for /api/health)
+NEXT_PUBLIC_GAS_INSIGHTS_URL=https://script.google.com/macros/s/AKfycb.../exec
 
-# Demo mode (set "false" in production)
+# Demo mode (set "false" in production; force-disabled in prod builds)
 NEXT_PUBLIC_DEMO_MODE=false
 
-# MQTT (optional, for realtime)
-NEXT_PUBLIC_MQTT_BROKER=wss://broker.example.com:8884
-NEXT_PUBLIC_MQTT_TOPIC=plts/+/status
+# MQTT (optional, realtime subscribe-only; TLS wss:// enforced)
+NEXT_PUBLIC_MQTT_BROKER_URL=wss://broker.example.com:8884
+# Optional viewer credentials (read-only broker user)
+# NEXT_PUBLIC_MQTT_USERNAME=viewer
+# NEXT_PUBLIC_MQTT_PASSWORD=...
+
+# Web Push alarm (optional)
+# NEXT_PUBLIC_PUSH_API_BASE=https://script.google.com/macros/s/AKfycb.../exec
+# NEXT_PUBLIC_PUSH_VAPID_PUBLIC_KEY=<65-byte base64url key>
 ```
 
 ### Langkah 3: Development
@@ -344,14 +354,26 @@ vercel --prod
 
 ## 6. Environment Variables
 
+<!-- [PARITY-3 2026-09-06] Names synchronized with the code; the old table
+     documented variables that do not exist (NEXT_PUBLIC_GAS_URL,
+     NEXT_PUBLIC_MQTT_BROKER, NEXT_PUBLIC_MQTT_TOPIC). MQTT topics are NOT
+     configurable — they are derived from the device ID
+     (plts/<deviceId>/status|log|online). -->
+
 | Variable | Wajib | Default | Description |
 |----------|-------|---------|-------------|
 | `NEXT_PUBLIC_API_BASE_URL` | Ya | — | ESP32 device URL (direct atau tunnel) |
-| `NEXT_PUBLIC_GAS_URL` | Ya | — | Google Apps Script Web App URL |
-| `NEXT_PUBLIC_DEMO_MODE` | Tidak | `false` | Demo mode (mock data, no real device) |
-| `NEXT_PUBLIC_MQTT_BROKER` | Tidak | — | MQTT broker URL (`wss://` untuk TLS) |
-| `NEXT_PUBLIC_MQTT_TOPIC` | Tidak | `plts/+/status` | MQTT topic pattern |
-| `AUTH_TOKEN` | Ya (server) | — | GAS auth token (server-side only) |
+| `NEXT_PUBLIC_GAS_INSIGHTS_URL` | Tidak | — | GAS Web App URL untuk health probe `/api/health` |
+| `NEXT_PUBLIC_BACKEND_API_BASE_URL` | Tidak | `NEXT_PUBLIC_API_BASE_URL` | Base URL agregasi server-side (reports/OTA) |
+| `NEXT_PUBLIC_DEMO_MODE` | Tidak | `false` | Demo mode (mock data; force-off di build produksi) |
+| `NEXT_PUBLIC_MQTT_BROKER_URL` | Tidak | — | MQTT broker URL (`wss://` saja; `ws://` hanya dev) |
+| `NEXT_PUBLIC_MQTT_USERNAME` / `NEXT_PUBLIC_MQTT_PASSWORD` | Tidak | — | Kredensial viewer read-only broker |
+| `NEXT_PUBLIC_PUSH_API_BASE` | Tidak | — | GAS PushService URL (web push alarm) |
+| `NEXT_PUBLIC_PUSH_VAPID_PUBLIC_KEY` | Tidak | — | Kunci publik VAPID (65-byte base64url) |
+| `NEXT_PUBLIC_EXPECTED_FIRMWARE_TAG` | Tidak (staging) | `v1.9.3` (dari release-policy.json) | Tag rilis otoritatif untuk staging build |
+| `API_BASE_URL` | Tidak | — | Proxy OTA sisi server (produksi) |
+| `JWT_SECRET` | Tidak (demo auth) | — | Secret sesi mock (≥32 chars) |
+| `MOCK_USER` / `MOCK_PASSWORD` | Tidak | `admin` / `admin123` | Kredensial demo |
 
 ---
 

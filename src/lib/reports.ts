@@ -36,9 +36,9 @@ export function recordsToCsv(records: DailyEnergyRecord[]): string {
       r.peakDischargeA ?? "",
       r.socMin ?? "",
       r.socMax ?? "",
-      r.alarmCount,
+      r.alarmCount ?? "",
       r.telemetryCompleteness,
-      r.deviceAvailability,
+      r.deviceAvailability ?? "",
     ]
       .map(csvEscape)
       .join(","),
@@ -46,7 +46,7 @@ export function recordsToCsv(records: DailyEnergyRecord[]): string {
   return [headers.join(","), ...rows].join("\n");
 }
 
-function csvEscape(v: string | number): string {
+function csvEscape(v: string | number | undefined | null): string {
   const s = String(v);
   if (s.includes(",") || s.includes('"') || s.includes("\n")) {
     return `"${s.replace(/"/g, '""')}"`;
@@ -98,9 +98,9 @@ function renderReportHtml(records: DailyEnergyRecord[], title: string): string {
       <td class="num">${r.peakDischargeA ?? "—"}</td>
       <td class="num">${r.socMin ?? "—"}%</td>
       <td class="num">${r.socMax ?? "—"}%</td>
-      <td class="num">${r.alarmCount}</td>
+      <td class="num">${r.alarmCount != null ? r.alarmCount : "—"}</td>
       <td class="num">${(r.telemetryCompleteness * 100).toFixed(1)}%</td>
-      <td class="num">${(r.deviceAvailability * 100).toFixed(1)}%</td>
+      <td class="num">${r.deviceAvailability != null ? (r.deviceAvailability * 100).toFixed(1) : "—"}%</td>
     </tr>`,
     )
     .join("");
@@ -206,9 +206,14 @@ export function aggregateDaily(records: DailyEnergyRecord[]): DailyEnergyRecord[
       existing.peakDischargeA = maxNullable(existing.peakDischargeA, r.peakDischargeA);
       existing.socMin = minNullable(existing.socMin, r.socMin);
       existing.socMax = maxNullable(existing.socMax, r.socMax);
-      existing.alarmCount += r.alarmCount;
+      // [PARITY-3] optional fields: aggregate only when present (GAS DAILY
+      // records honestly omit alarmCount / deviceAvailability).
+      existing.alarmCount = (existing.alarmCount ?? 0) + (r.alarmCount ?? 0);
       existing.telemetryCompleteness = Math.min(existing.telemetryCompleteness, r.telemetryCompleteness);
-      existing.deviceAvailability = Math.min(existing.deviceAvailability, r.deviceAvailability);
+      if (r.deviceAvailability != null) {
+        existing.deviceAvailability = Math.min(
+          existing.deviceAvailability ?? 1, r.deviceAvailability);
+      }
     }
   }
   return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));

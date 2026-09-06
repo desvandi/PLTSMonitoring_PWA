@@ -262,6 +262,11 @@ export interface Calibration {
   sht31HumOffset: number;                     // % RH offset
   timestamp: number;
   source: string;                             // 'manual' | 'auto_zero' | 'factory'
+  // [PARITY-3 2026-09-06] Live uncalibrated battery voltage (volts, BEFORE
+  // the 3-point map) exposed by GET /api/calibration — exactly the `raw`
+  // value the point routes expect. Null when the driver has no valid
+  // reading. Used by the calibration capture button to prefill raw.
+  voltageRaw?: number | null;
 }
 
 // ---------- CONFIG (brief §64) ----------
@@ -545,11 +550,14 @@ export type OtaHistoryEntry = {
   timestamp: number;
   fromVersion: string;
   toVersion: string;
-  status: 'success' | 'failed' | 'rollback';
+  // [PARITY-3 2026-09-06] 'progress' — intermediate lifecycle verbs from the
+  // modular GAS OTA bridge (ACCEPTED / DOWNLOADING / VERIFIED / FLASHED).
+  status: 'success' | 'failed' | 'rollback' | 'progress';
   durationSeconds: number;
   // [W13-3] Present when sourced from the GAS OtaEvents sheet (OTA_LOG):
   // the raw device-reported event verb + message (ACTIVATED / ROLLBACK /
-  // DOWNLOAD_FAILED / REFUSED / VERIFICATION_FAILED / BOOT_FAILED).
+  // DOWNLOAD_FAILED / REFUSED / VERIFICATION_FAILED / BOOT_FAILED, plus the
+  // modular lifecycle ACCEPTED / DOWNLOADING / VERIFIED / FLASHED / FAILED).
   event?: string;
   message?: string;
 };
@@ -583,6 +591,9 @@ export type InsightsEnvelope = {
   mock?: boolean;
   error?: string;
   message?: string;
+  // [PARITY-3 2026-09-06] Server-side generation time (ISO string) from the
+  // GAS INSIGHTS action — powers the cache-age display alongside cached.
+  generatedAt?: string;
 };
 
 // ---------- REPORTS (brief §66, §96) ----------
@@ -607,9 +618,17 @@ export interface DailyEnergyRecord {
   peakDischargeA: number | null;
   socMin: number | null;
   socMax: number | null;
-  alarmCount: number;
+  // [PARITY-3 2026-09-06] Optional + honest: the GAS DAILY source computes
+  // these server-side where available; fields the backend honestly cannot
+  // derive (alarms are device-local, never persisted in Sheets) are omitted
+  // and rendered as '—' instead of being fabricated.
+  alarmCount?: number;
   telemetryCompleteness: number;               // 0..1
-  deviceAvailability: number;                  // 0..1
+  deviceAvailability?: number;                 // 0..1
+  // [PARITY-3] GAS DAILY energy quality verdict (NO_DATA / COUNTER_RESET /
+  // VALID / PARTIAL) — surfaced so the operator sees when a day's energy is
+  // affected by a counter reset instead of silently trusting the number.
+  energyQuality?: 'NO_DATA' | 'COUNTER_RESET' | 'VALID' | 'PARTIAL';
 }
 
 // ---------- FACTORY RESET ----------

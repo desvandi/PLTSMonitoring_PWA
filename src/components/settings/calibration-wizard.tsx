@@ -55,24 +55,41 @@ const CHANNEL_META: Record<ChannelKey, { label: string; unit: string; icon: Reac
   ac: { label: 'Arus AC (ACS712)',       unit: 'A', icon: Gauge,  hint: 'Beri beban AC dummy (mis. setrika 300W). Ukur dengan clamp meter AC.' },
 };
 
-async function fetchLatest(gasUrl: string, token: string): Promise<LatestReading | null> {
+// [PARITY-3 2026-09-06 FIX — dual bug]: (1) device_key was NEVER sent, so
+// GAS resolved the Config-sheet DEFAULT device — a multi-device fleet would
+// calibrate against the wrong device's readings; (2) only the legacy FLAT
+// fields were parsed, while GAS ≥ v2 answers the canonical NESTED envelope
+// (data.battery.voltage.value, …) — on a v2 backend every raw reading
+// resolved to null and the wizard computed factors against nothing.
+async function fetchLatest(
+  gasUrl: string,
+  token: string,
+  deviceKey?: string,
+): Promise<LatestReading | null> {
   try {
+    const body: Record<string, string> = { action: 'LATEST', token };
+    if (deviceKey && deviceKey.trim()) body.device_key = deviceKey.trim();
     const res = await fetch(gasUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: 'LATEST', token }),
+      body: JSON.stringify(body),
       redirect: 'follow',
     });
     if (!res.ok) return null;
-    const body = (await res.json().catch(() => null)) as { status?: string; data?: Record<string, unknown> } | null;
-    if (!body || body.status !== 'SUCCESS' || !body.data) return null;
-    const d = body.data;
+    const bodyJson = (await res.json().catch(() => null)) as { status?: string; data?: Record<string, unknown> } | null;
+    if (!bodyJson || bodyJson.status !== 'SUCCESS' || !bodyJson.data) return null;
+    const d = bodyJson.data;
     const num = (v: unknown) => (v === '' || v == null ? null : Number(v));
+    // Nested (canonical v2) first, flat legacy fallback second.
+    const bat = (d.battery ?? {}) as Record<string, unknown>;
+    const ac = (d.ac ?? {}) as Record<string, unknown>;
+    const measVal = (m: unknown) =>
+      m && typeof m === 'object' ? num((m as Record<string, unknown>).value) : num(m);
     return {
-      v_bat:      num(d.v_bat)      as number | null,
-      i_bat_dc:   num(d.i_bat_dc ?? d.i_bat) as number | null,
-      i_ac_load:  num(d.i_ac_load)  as number | null,
-      timestamp:  (d.timestamp as string | null) ?? null,
+      v_bat: num(d.v_bat) ?? measVal(bat.voltage),
+      i_bat_dc: num(d.i_bat_dc ?? d.i_bat) ?? measVal(bat.current),
+      i_ac_load: num(d.i_ac_load) ?? measVal(ac.rmsCurrent),
+      timestamp: (d.eventTime as string | null) ?? (d.timestamp as string | null) ?? null,
     };
   } catch {
     return null;
@@ -138,7 +155,8 @@ export function CalibrationWizard() {
   const refreshReading = useCallback(async () => {
     if (!config) return;
     setLoading(true);
-    const latest = await fetchLatest(config.gas_webapp_url, config.auth_token);
+    const latest = await fetchLatest(
+      config.gas_webapp_url, config.auth_token, config.device_id);
     setReading(latest);
     if (latest) {
       setChannels((prev) => ({
@@ -342,6 +360,18 @@ export function CalibrationWizard() {
     );
   };
 
+  // [PARITY-3 2026-09-06] Device-type gate: the multiplier model
+  // (v_calib / i_calib_dc / i_calib_ac) ONLY exists in firmware-generic
+  // (config.json factors, polled via CALIBRATION_PENDING). The MODULAR
+  // firmware never polls that sheet — its calibration is the 3-point
+  // voltage map + ACS712 zero + SHT31 offsets (CalibrationCenter, REST).
+  // Previously the wizard silently published factors a modular device would
+  // never apply; now it refuses with an honest pointer.
+  const activeDevice = config?.devices.find(
+    (d) => d.device_id === config.active_device_id) ?? config?.devices[0];
+  const firmwareType = activeDevice?.firmware_type ?? null;
+  const isModular = firmwareType === 'modular';
+
   return (
     <Card data-testid="calibration-wizard-panel">
       <CardHeader>
@@ -354,6 +384,20 @@ export function CalibrationWizard() {
         </CardDescription>
       </CardHeader>
       <CardContent>
+        {isModular ? (
+          <Alert data-testid="calibration-wizard-modular-gate">
+            <ShieldCheck className="w-4 h-4" />
+            <AlertTitle>Wizard tidak berlaku untuk firmware modular</AlertTitle>
+            <AlertDescription className="text-xs">
+              Perangkat aktif ini terdaftar di GAS sebagai <code>firmware_type =
+              modular</code>. Firmware modular tidak memakai faktor pengali —
+              kalibrasinya adalah 3-point voltage + ACS712 zero + offset SHT31
+              yang dikelola lewat <b>Calibration Center</b> (REST langsung ke
+              perangkat). Mengirim faktor pengali ke perangkat modular tidak
+              akan pernah diterapkan, jadi wizard ini menolak jalan (fail-closed).
+            </AlertDescription>
+          </Alert>
+        ) : (
         <div className="flex flex-wrap gap-2">
           <Button
             onClick={() => setOpen(true)}
@@ -403,6 +447,7 @@ export function CalibrationWizard() {
             </AlertDialogContent>
           </AlertDialog>
         </div>
+        )}
       </CardContent>
 
       <Dialog open={open} onOpenChange={setOpen}>

@@ -36,6 +36,11 @@ export interface DeviceProfile {
   // Optional + backward-compatible: absent on legacy profiles → emergency
   // control stays DISABLED with an honest prompt (fail-closed).
   admin_token?: string;
+  // [PARITY-3 2026-09-06] Firmware tree as declared in the GAS DEVICES sheet
+  // ('generic' | 'modular'), refreshed by the PING handshake. Gates
+  // device-type-specific flows (the multiplier calibration wizard is
+  // firmware-generic only). Absent on legacy profiles.
+  firmware_type?: string | null;
   dashboard_settings: DashboardSettings;
 }
 
@@ -115,6 +120,9 @@ function parseDeviceProfile(raw: unknown): DeviceProfile | null {
     gas_webapp_url: obj.gas_webapp_url as string,
     auth_token: obj.auth_token as string,
     admin_token: isNonEmptyString(obj.admin_token) ? (obj.admin_token as string) : undefined,
+    firmware_type: isNonEmptyString(obj.firmware_type)
+      ? (obj.firmware_type as string).toLowerCase()
+      : (obj.firmware_type === null ? null : undefined),
     dashboard_settings: parseDashboardSettings(obj.dashboard_settings as Record<string, unknown> | undefined),
   };
 }
@@ -326,6 +334,25 @@ export function removeDeviceFromConfig(existing: PltsSysConfig, deviceId: string
   });
 }
 
+/**
+ * [PARITY-3 2026-09-06] Record the device's declared firmware tree from a
+ * PING handshake (GAS PING data.firmware_type). Silent no-op when the type
+ * is unchanged — the 60 s GasHealth ping calls this after every success and
+ * must not thrash the config's updated_at.
+ */
+export function setDeviceFirmwareType(deviceId: string, firmwareType: string | null): void {
+  const config = readSysConfig();
+  if (!config) return;
+  const idx = config.devices.findIndex((d) => d.device_id === deviceId);
+  if (idx === -1) return;
+  const normalized = typeof firmwareType === 'string' ? firmwareType.toLowerCase() : null;
+  const current = config.devices[idx].firmware_type ?? null;
+  if (current === normalized) return;
+  const devices = config.devices.slice();
+  devices[idx] = { ...devices[idx], firmware_type: normalized };
+  persistSysConfig({ ...config, devices });
+}
+
 export function switchActiveDevice(existing: PltsSysConfig, deviceId: string): PltsSysConfig {
   const target = existing.devices.find((d) => d.device_id === deviceId);
   if (!target) return existing;
@@ -354,6 +381,11 @@ export interface HandshakeResult {
   device_registered?: boolean | null;
   /** true when GAS runs in legacy single-device mode (empty DEVICES sheet). */
   legacy_mode?: boolean;
+  /** [PARITY-3 2026-09-06] Declared firmware tree of the registered device
+   * (DEVICES!firmware_type: 'generic' | 'modular' | null). Null = undeclared
+   * or legacy GAS. Gates device-type-specific PWA flows (e.g. the multiplier
+   * calibration wizard only applies to firmware-generic). */
+  firmware_type?: string | null;
 }
 
 export async function pingGasEndpoint(
@@ -403,7 +435,11 @@ export async function pingGasEndpoint(
       status?: string;
       code?: number;
       message?: string;
-      data?: { device_registered?: boolean | null; legacy_mode?: boolean } | null;
+      data?: {
+        device_registered?: boolean | null;
+        legacy_mode?: boolean;
+        firmware_type?: string | null;
+      } | null;
     } | null;
 
     if (!payload) {
@@ -432,6 +468,9 @@ export async function pingGasEndpoint(
       latency_ms: latency,
       device_registered: deviceRegistered,
       legacy_mode: legacyMode,
+      firmware_type: typeof payload.data?.firmware_type === 'string'
+        ? payload.data.firmware_type
+        : (payload.data?.firmware_type ?? null),
     };
   } catch (err) {
     clearTimeout(timer);

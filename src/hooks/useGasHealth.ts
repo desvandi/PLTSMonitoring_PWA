@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { pingGasEndpoint } from '@/lib/sysConfig';
+import { pingGasEndpoint, setDeviceFirmwareType } from '@/lib/sysConfig';
 import { useSysConfig } from '@/components/providers/sys-config-provider';
 
 export type HealthState = 'idle' | 'checking' | 'online' | 'degraded' | 'offline';
@@ -45,13 +45,23 @@ export function useGasHealth(intervalMs = DEFAULT_INTERVAL_MS): HealthStatus {
       const controller = new AbortController();
       abortRef.current = controller;
       setState('checking');
-      const result = await pingGasEndpoint(config.gas_webapp_url, config.auth_token, 7000);
+      // [PARITY-3 2026-09-06] Send the active device_key: GAS ≥ PARITY-3
+      // answers with the registration report AND the declared firmware
+      // tree (data.firmware_type) — the health ping doubles as the
+      // type-discovery channel for device-gated flows (calibration wizard).
+      const result = await pingGasEndpoint(
+        config.gas_webapp_url, config.auth_token, 7000, config.device_id);
       if (controller.signal.aborted) return;
       setLatency(result.latency_ms ?? null);
       setLastCheckedAt(new Date().toISOString());
       setMessage(result.message);
       if (result.ok) {
         setState((result.latency_ms ?? 0) > 3000 ? 'degraded' : 'online');
+        // [PARITY-3] Persist the reported firmware tree (no-op when
+        // unchanged — persistSysConfig must not thrash on a 60 s cadence).
+        if (result.firmware_type !== undefined) {
+          setDeviceFirmwareType(config.device_id, result.firmware_type);
+        }
       } else {
         setState('offline');
       }
