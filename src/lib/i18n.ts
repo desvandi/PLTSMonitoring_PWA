@@ -70,6 +70,7 @@ export type TranslationKey =
   | "emergency.cfg_iDcOverA"
   | "emergency.cfg_iAcLoadOverA"
   | "emergency.cfg_iAcGenOverA"
+  | "emergency.cfg_iAcGenOverA_hint"
   | "emergency.cfg_debounceN"
   | "emergency.cfg_recoverySec"
   | "emergency.cfg_relayPin"
@@ -300,6 +301,8 @@ export type TranslationKey =
   | "config.telemetry_interval"
   | "config.alarm_thresholds"
   | "config.soc_params"
+  | "config.alarm_thresholds_note"
+  | "config.alarm_unavailable"
   | "config.calibration_params"
   | "config.revision"
   | "config.source"
@@ -517,6 +520,7 @@ const id: Dict = {
   "emergency.cfg_iDcOverA": "Arus DC maks (A)",
   "emergency.cfg_iAcLoadOverA": "Arus beban maks (A)",
   "emergency.cfg_iAcGenOverA": "Arus jenset maks (A)",
+  "emergency.cfg_iAcGenOverA_hint": "Kanal RESERVED — sensor jenset belum terpasang di revisi hardware ini (i_ac_gen terbaca null/NOT_AVAILABLE).",
   "emergency.cfg_debounceN": "Debounce (pembacaan)",
   "emergency.cfg_recoverySec": "Masa pulih (detik)",
   "emergency.cfg_relayPin": "Pin relay (GPIO)",
@@ -736,6 +740,8 @@ const id: Dict = {
   "config.telemetry_interval": "Interval Telemetri",
   "config.alarm_thresholds": "Threshold Alarm",
   "config.soc_params": "Parameter SOC",
+  "config.alarm_thresholds_note": "Kebijakan alarm dua-tingkat dievaluasi langsung oleh perangkat (AnomalyDetector) — tersimpan di NVS, aktif tanpa reboot. Urutan tier divalidasi firmware (mis. low: critical < warn).",
+  "config.alarm_unavailable": "Threshold alarm tidak tersedia di firmware ini (butuh readback alarmThresholds PARITY-4). Perbarui firmware perangkat untuk mengatur kebijakan alarm di sini.",
   "config.calibration_params": "Parameter Kalibrasi",
   "config.revision": "Revisi",
   "config.source": "Sumber",
@@ -941,6 +947,7 @@ const en: Dict = {
   "emergency.cfg_iDcOverA": "Max DC current (A)",
   "emergency.cfg_iAcLoadOverA": "Max load current (A)",
   "emergency.cfg_iAcGenOverA": "Max genset current (A)",
+  "emergency.cfg_iAcGenOverA_hint": "RESERVED channel — no genset sensor installed on this hardware revision (i_ac_gen reads null/NOT_AVAILABLE).",
   "emergency.cfg_debounceN": "Debounce (readings)",
   "emergency.cfg_recoverySec": "Recovery window (s)",
   "emergency.cfg_relayPin": "Relay pin (GPIO)",
@@ -1160,6 +1167,8 @@ const en: Dict = {
   "config.telemetry_interval": "Telemetry Interval",
   "config.alarm_thresholds": "Alarm Thresholds",
   "config.soc_params": "SOC Parameters",
+  "config.alarm_thresholds_note": "Two-tier alarm policy evaluated live by the device (AnomalyDetector) — persisted in NVS, applied without reboot. Warn/Critical tier order is validated by the firmware (e.g. low: critical < warn).",
+  "config.alarm_unavailable": "Alarm thresholds are not available on this firmware (requires the PARITY-4 alarmThresholds readback). Update the device firmware to configure the alarm policy here.",
   "config.calibration_params": "Calibration Parameters",
   "config.revision": "Revision",
   "config.source": "Source",

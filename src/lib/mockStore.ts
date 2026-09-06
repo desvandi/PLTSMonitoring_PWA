@@ -216,29 +216,21 @@ function defaultConfig(): DeviceConfig {
     fullChargeCurrentThreshold: 2.0,
     fullChargePersistenceSec: 600,
     telemetryIntervalSec: 5,
-    socParams: {
-      syncOnFullCharge: true,
-      syncOnVoltage: true,
-      voltageSyncHysteresisV: 0.5,
-      baselineAgingPerMonthPct: 0.5,
-    },
+    // [PARITY-4] alarm demo values MIRROR the firmware defaults (Config.h
+    // ALARM_*) so demo mode teaches the same contract as production.
     alarmThresholds: {
       voltageLowWarn: 46.0,
       voltageLowCritical: 45.0,
       voltageHighWarn: 55.0,
       voltageHighCritical: 56.0,
-      currentHighWarn: 40,
-      currentHighCritical: 50,
-      temperatureHighWarn: 45,
-      temperatureHighCritical: 55,
+      currentHighWarn: 60,
+      currentHighCritical: 100,
+      temperatureHighWarn: 40,
+      temperatureHighCritical: 50,
       humidityHighWarn: 85,
-      socLowWarn: 30,
-      socLowCritical: 20,
+      socLowWarn: 20,
+      socLowCritical: 10,
     } as AlarmThresholds,
-    calibrationParams: {
-      autoZeroAcs712OnBoot: true,
-      sht31HeaterEnabled: false,
-    },
   };
 }
 

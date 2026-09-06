@@ -271,17 +271,22 @@ export interface Calibration {
 
 // ---------- CONFIG (brief §64) ----------
 export interface AlarmThresholds {
-  voltageLowWarn: number;                     // V
-  voltageLowCritical: number;                 // V
-  voltageHighWarn: number;                    // V
-  voltageHighCritical: number;                // V
-  currentHighWarn: number;                    // A (absolute value)
-  currentHighCritical: number;                // A
-  temperatureHighWarn: number;                 // °C
-  temperatureHighCritical: number;            // °C
-  humidityHighWarn: number;                   // %
-  socLowWarn: number;                         // %
-  socLowCritical: number;                     // %
+  // [PARITY-4 2026-09-06] REAL cross-layer contract: firmware /api/config
+  // serves these fields (flat + nested) from authoritative NVS "plts_alarm",
+  // accepts them via POST /api/config / MQTT config.update, and evaluates
+  // them live (AnomalyDetector, two-tier + hysteresis). Optional fields:
+  // PWAs against older firmware degrade honestly (card hidden, values '—').
+  voltageLowWarn?: number;          // V    [40,50]
+  voltageLowCritical?: number;      // V    [40,50], < warn
+  voltageHighWarn?: number;         // V    [50,60]
+  voltageHighCritical?: number;     // V    [50,60], > warn
+  currentHighWarn?: number;         // A    |I| [10,150]
+  currentHighCritical?: number;     // A    |I| [10,160]
+  temperatureHighWarn?: number;     // degC [-20,80]
+  temperatureHighCritical?: number; // degC [-20,90], > warn
+  humidityHighWarn?: number;        // %    [50,100]
+  socLowWarn?: number;              // %    [5,50]
+  socLowCritical?: number;          // %    [2,50], < warn
 }
 
 export interface DeviceConfig {
@@ -307,17 +312,17 @@ export interface DeviceConfig {
   bmsModbusSlaveId?: number;                   // 1..247
   bmsModbusTcpHost?: string;                   // empty = Modbus TCP slot off
   bmsModbusTcpPort?: number;                   // 1..65535 (default 502)
-  socParams: {
-    syncOnFullCharge: boolean;
-    syncOnVoltage: boolean;
-    voltageSyncHysteresisV: number;
-    baselineAgingPerMonthPct: number;
-  };
-  alarmThresholds: AlarmThresholds;
-  calibrationParams: {
-    autoZeroAcs712OnBoot: boolean;
-    sht31HeaterEnabled: boolean;
-  };
+  // [PARITY-4] authoritative two-tier alarm thresholds — served flat AND
+  // nested by firmware /api/config. Optional: older firmware omits them.
+  alarmThresholds?: AlarmThresholds;
+  // [PARITY-4 REMOVED-GHOST] `socParams` (syncOnFullCharge / syncOnVoltage /
+  // voltageSyncHysteresisV / baselineAgingPerMonthPct) and `calibrationParams`
+  // (autoZeroAcs712OnBoot / sht31HeaterEnabled) were mockStore-only shapes
+  // with NO authoritative firmware implementation — the PWA rendered cards
+  // that could never appear in production. Removed per feature registry
+  // F-SOC-002 / F-CAL-002 (docs/feature-registry.md, firmware repo).
+  // REAL SOC sync knobs: fullChargeCurrentThreshold + fullChargePersistenceSec.
+  // REAL calibration surface: the Calibration type (calibration wizard).
 }
 
 // ---------- ALARM (brief §34-35) ----------
