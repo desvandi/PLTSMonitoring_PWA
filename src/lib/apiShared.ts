@@ -44,3 +44,35 @@ export function generateRequestId(): string {
   const hex = Array.from(arr, (b) => b.toString(16).padStart(2, "0")).join("");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
+
+/**
+ * [PRODUCTION-GRADE 2026-09 / audit p.62-65] Canonical mutation envelope.
+ * The firmware now REQUIRES (CORE-02) version + transactionId + issuedAt +
+ * expiresAt on every mutation — replay protection must never silently
+ * degrade to journal-retention-only. Operators get a 60 s TTL: a manual
+ * command queued longer than that is stale by definition (audit p.65
+ * recommends 30–60 s for manual commands).
+ *
+ * The SAME transactionId is reused across transport retries (TXN-09):
+ * a network timeout + retry hits the firmware journal as DUPLICATE and
+ * replays the original ACK instead of executing twice.
+ */
+export const COMMAND_TTL_SEC = 60;
+
+export function buildCommandEnvelope(): {
+  requestId: string;
+  transactionId: string;
+  version: number;
+  issuedAt: number;
+  expiresAt: number;
+} {
+  const requestId = generateRequestId();
+  const issuedAt = Math.floor(Date.now() / 1000);
+  return {
+    requestId,
+    transactionId: requestId, // single-logical-command semantics (v2 contract)
+    version: 1,
+    issuedAt,
+    expiresAt: issuedAt + COMMAND_TTL_SEC,
+  };
+}

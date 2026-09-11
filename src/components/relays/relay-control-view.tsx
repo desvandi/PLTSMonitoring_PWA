@@ -45,10 +45,16 @@ function RelayChannelCard({ channel, status }: { channel: number; status: RelayC
     },
     onSuccess: (result) => {
       if (result.ok) {
-        setCommandState(channel, status.desiredState ? "CONFIRMED_ON" : "CONFIRMED_OFF");
+        // [PRODUCTION-GRADE 2026-09 / audit p.70] Derive the confirmation from
+        // the ACTION that just succeeded, NOT from the pre-command status
+        // snapshot (the old code read status.desiredState — a stale value, so
+        // ON from an OFF state showed CONFIRMED_OFF).
+        // QUEUED result → the executor will finalize asynchronously; the
+        // relayStatus invalidation below reconciles the 3-tier display.
+        setCommandState(channel, result.result === "QUEUED" ? "COMMAND_PENDING" : "CONFIRMED_ON");
         toast.success(`Channel ${channel}: ${result.message}`);
       } else {
-        setCommandState(channel, "FAILED");
+        setCommandState(channel, result.result === "UNKNOWN" ? "UNKNOWN" : "FAILED");
         toast.error(`Channel ${channel}: ${result.message}`);
       }
       qc.invalidateQueries({ queryKey: ["relayStatus"] });

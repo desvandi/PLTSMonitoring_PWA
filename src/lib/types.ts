@@ -477,10 +477,16 @@ export interface SystemStatus {
 //   DELAYED   10 s ≤ age < 60 s
 //   STALE     age ≥ 60 s
 //   NO_DATA   no envelope at all (or timestamp 0 / never received)
-export type DataFreshness = 'LIVE' | 'DELAYED' | 'STALE' | 'NO_DATA';
+// [PRODUCTION-GRADE 2026-09 / audit p.240-241] Added CLOCK_SKEW: a device
+// timestamp more than MAX_CLOCK_SKEW_MS in the FUTURE is no longer treated
+// as LIVE (the old `if (age < 0) return 'LIVE'` made a device clock running
+// 10 minutes ahead look perfectly fresh). This mirrors the GAS HMAC ±300 s
+// window — one canonical clock-skew policy across firmware/GAS/PWA.
+export type DataFreshness = 'LIVE' | 'DELAYED' | 'STALE' | 'CLOCK_SKEW' | 'NO_DATA';
 
 export const FRESHNESS_LIVE_MS = 10_000;
 export const FRESHNESS_STALE_MS = 60_000;
+export const MAX_CLOCK_SKEW_MS = 300_000;  // ±5 min — same window as GAS HMAC
 
 /**
  * Compute the freshness ladder for a status envelope.
@@ -496,7 +502,8 @@ export function computeFreshness(
     return 'NO_DATA';
   }
   const age = now - timestamp;
-  if (age < 0) return 'LIVE';               // clock skew — treat as live
+  if (age < -MAX_CLOCK_SKEW_MS) return 'CLOCK_SKEW';  // device clock far ahead
+  if (age < 0) return 'LIVE';                          // minor skew — treat as live
   if (age < FRESHNESS_LIVE_MS) return 'LIVE';
   if (age < FRESHNESS_STALE_MS) return 'DELAYED';
   return 'STALE';
@@ -656,9 +663,9 @@ export type RelayCommandState =
   | 'CONFIRMED_ON'
   | 'CONFIRMED_OFF'
   | 'TIMEOUT'
+  | 'UNKNOWN'
   | 'FAILED'
   | 'DEVICE_OFFLINE'
-  | 'UNKNOWN'
   | 'STATE_DRIFT';
 
 export type RelayStateConfidence = 'SOFTWARE_ONLY' | 'VERIFIED' | 'UNKNOWN' | 'FAULT';
@@ -696,12 +703,24 @@ export interface RelayCommandRequest {
   requestId: string;
 }
 
+// [PRODUCTION-GRADE 2026-09 / audit p.72-75] Asynchronous submission contract.
+// The firmware now returns QUEUED for relay mutations (single physical
+// executor via the FreeRTOS queue in relayTask). 'UNKNOWN' is a FIRST-CLASS
+// outcome: an I²C timeout does not prove the write failed — the command may
+// or may not have reached the expander (never fabricate certainty).
+// Reconcile via GET /api/relays/transactions/{transactionId} + relayStatus.
 export interface RelayCommandResult {
   ok: boolean;
-  result: 'EXECUTED' | 'BLOCKED' | 'REJECTED' | 'FAILED';
+  result: 'QUEUED' | 'EXECUTED' | 'BLOCKED' | 'REJECTED' | 'FAILED' | 'UNKNOWN';
+  state?: 'QUEUED' | 'TERMINAL' | 'PENDING';
   channel: number;
   message: string;
   transactionId: string;
+  // Present on the transaction-query endpoint (GET /api/relays/transactions/{id}):
+  reportedState?: boolean;
+  desiredState?: boolean;
+  stateSequence?: number;
+  completedAtMs?: number;
 }
 
 export interface RelayChannelConfig {
