@@ -47,6 +47,20 @@ describe("P1-015 — freshness ladder", () => {
   it("future timestamp (clock skew) → LIVE, never error", () => {
     expect(computeFreshness(NOW + 30_000, { now: NOW })).toBe("LIVE");
   });
+
+  // [PRODUCTION-GRADE 2026-09 / audit p.240-241] A device clock running far
+  // AHEAD must surface as CLOCK_SKEW, not silently pass as LIVE — this
+  // mirrors the GAS HMAC ±300 s window (one canonical clock policy).
+  it("future timestamp beyond +5 min → CLOCK_SKEW (not LIVE)", () => {
+    expect(computeFreshness(NOW + 300_001, { now: NOW })).toBe("CLOCK_SKEW");
+    expect(computeFreshness(NOW + 600_000, { now: NOW })).toBe("CLOCK_SKEW");
+    expect(computeFreshness(NOW + 3_600_000, { now: NOW })).toBe("CLOCK_SKEW");
+  });
+
+  it("minor future skew (< +5 min) still → LIVE", () => {
+    expect(computeFreshness(NOW + 1_000, { now: NOW })).toBe("LIVE");
+    expect(computeFreshness(NOW + 299_999, { now: NOW })).toBe("LIVE");
+  });
 });
 
 describe("P1-011 — effective quality propagation", () => {

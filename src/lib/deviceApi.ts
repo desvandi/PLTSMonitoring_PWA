@@ -29,7 +29,7 @@ import type {
   RelayChannelId,
 } from "@/lib/types";
 import { getCompatibilitySnapshot, IncompatibleFirmwareError } from "./compatibility";
-import { API_BASE_URL, ApiError, getCsrfToken, generateRequestId } from "./apiShared";
+import { API_BASE_URL, ApiError, getCsrfToken, generateRequestId, buildCommandEnvelope } from "./apiShared";
 
 export interface DeviceApiClient {
   // ---------- Status & version ----------
@@ -91,6 +91,8 @@ export interface DeviceApiClient {
 
   // ---------- 8-Channel Relay (v1.8.0) ----------
   relayStatus: () => Promise<RelayStatusResponse>;
+  // [RG-RELAY-09] Final-outcome reconciliation — poll after a QUEUED ack.
+  relayTransaction: (transactionId: string) => Promise<RelayCommandResult>;
   relayOn: (channel: RelayChannelId) => Promise<RelayCommandResult>;
   relayOff: (channel: RelayChannelId) => Promise<RelayCommandResult>;
   relayPulse: (channel: RelayChannelId, durationMs: number) => Promise<RelayCommandResult>;
@@ -198,7 +200,8 @@ export const deviceApi: DeviceApiClient = {
     if (compat && !compat.canViewTelemetry) throw new IncompatibleFirmwareError(compat.message);
     return deviceRequest<{ updated: boolean }>("/api/config", {
       method: "POST",
-      body: { ...cfg, requestId: generateRequestId() },
+      // [PRODUCTION-GRADE 2026-09 / CORE-02] Full command envelope
+      body: { ...cfg, ...buildCommandEnvelope() },
     });
   },
   updateCalibration: (cal) => {
@@ -206,7 +209,7 @@ export const deviceApi: DeviceApiClient = {
     if (compat && !compat.canViewTelemetry) throw new IncompatibleFirmwareError(compat.message);
     return deviceRequest<{ updated: boolean }>("/api/calibration", {
       method: "POST",
-      body: { ...cal, requestId: generateRequestId() },
+      body: { ...cal, ...buildCommandEnvelope() },
     });
   },
   voltageCalibrationPoint: (point, reference, raw) => {
@@ -214,7 +217,7 @@ export const deviceApi: DeviceApiClient = {
     if (compat && !compat.canViewTelemetry) throw new IncompatibleFirmwareError(compat.message);
     return deviceRequest<{ updated: boolean }>(`/api/calibration/voltage/point/${point}`, {
       method: "POST",
-      body: { reference, raw, requestId: generateRequestId() },
+      body: { reference, raw, ...buildCommandEnvelope() },
     });
   },
   acs712ZeroCal: () => {
@@ -222,7 +225,7 @@ export const deviceApi: DeviceApiClient = {
     if (compat && !compat.canViewTelemetry) throw new IncompatibleFirmwareError(compat.message);
     return deviceRequest<{ updated: boolean; newOffset: number }>(
       "/api/calibration/acs712/zero",
-      { method: "POST", body: { requestId: generateRequestId() } },
+      { method: "POST", body: { ...buildCommandEnvelope() } },
     );
   },
 
@@ -244,7 +247,7 @@ export const deviceApi: DeviceApiClient = {
       `/api/alarms/${encodeURIComponent(alarmId)}/acknowledge`,
       {
         method: "POST",
-        body: { requestId: generateRequestId() },
+        body: { ...buildCommandEnvelope() },
       },
     ),
 
@@ -317,14 +320,14 @@ export const deviceApi: DeviceApiClient = {
   updateDevice: (opts) =>
     deviceRequest<{ updated: boolean }>("/api/config/device", {
       method: "POST",
-      body: { ...opts, requestId: generateRequestId() },
+      body: { ...opts, ...buildCommandEnvelope() },
     }),
   changePassword: (current, next) =>
     deviceRequest<{ changed: boolean }>("/api/config/password", {
       method: "POST",
       // [PARITY-4] the firmware joins password changes to the canonical
       // config.password command path (journal + dedup).
-      body: { current, next, requestId: generateRequestId() },
+      body: { current, next, ...buildCommandEnvelope() },
     }),
   exportConfig: () => deviceRequest<{ config: SystemConfig }>("/api/config/export"),
   // [PARITY-4] Config import: requestId rides the X-Request-Id HEADER. The
@@ -341,9 +344,17 @@ export const deviceApi: DeviceApiClient = {
 
   // ---------- 8-Channel Relay (v1.8.0) ----------
   // [Brief §6] All relay mutations use IDEMPOTENT_STATE (on/off), NOT toggle.
-  // Each command carries requestId for tracking + dedup on firmware side.
+  // [PRODUCTION-GRADE 2026-09 / audit p.62-65] Every mutation now carries the
+  // FULL command envelope (requestId/transactionId/version/issuedAt/expiresAt)
+  // — the firmware CORE-02 gate rejects envelope-less mutations, so replay
+  // protection is freshness + journal retention, never journal-only.
   // TIMEOUT on PWA side → UNKNOWN state (NOT FAILED) — reconcile after reconnect.
   relayStatus: () => deviceRequest<RelayStatusResponse>("/api/relays"),
+  // [RG-RELAY-09] Query the final outcome of a queued relay transaction.
+  relayTransaction: (transactionId: string) =>
+    deviceRequest<RelayCommandResult>(
+      `/api/relays/transactions/${encodeURIComponent(transactionId)}`,
+    ),
   // [P1 PWA-03] Every relay mutation passes through assertRelayCommandAllowed()
   // BEFORE the POST — command-layer enforcement, not just UI gating.
   // NOTE: relay mutations are `async` so the guard's throw surfaces as a
@@ -353,42 +364,42 @@ export const deviceApi: DeviceApiClient = {
     assertRelayCommandAllowed();
     return deviceRequest<RelayCommandResult>(`/api/relays/${channel}/on`, {
       method: "POST",
-      body: { requestId: generateRequestId(), source: "MANUAL" },
+      body: { source: "MANUAL", ...buildCommandEnvelope() },
     });
   },
   relayOff: async (channel) => {
     assertRelayCommandAllowed();
     return deviceRequest<RelayCommandResult>(`/api/relays/${channel}/off`, {
       method: "POST",
-      body: { requestId: generateRequestId(), source: "MANUAL" },
+      body: { source: "MANUAL", ...buildCommandEnvelope() },
     });
   },
   relayPulse: async (channel, durationMs) => {
     assertRelayCommandAllowed();
     return deviceRequest<RelayCommandResult>(`/api/relays/${channel}/pulse`, {
       method: "POST",
-      body: { requestId: generateRequestId(), source: "MANUAL", durationMs },
+      body: { source: "MANUAL", durationMs, ...buildCommandEnvelope() },
     });
   },
   relayAllOff: async () => {
     assertRelayCommandAllowed();
     return deviceRequest<RelayCommandResult>("/api/relays/all_off", {
       method: "POST",
-      body: { requestId: generateRequestId(), source: "MANUAL" },
+      body: { source: "MANUAL", ...buildCommandEnvelope() },
     });
   },
   relayAcknowledge: async (channel) => {
     assertRelayCommandAllowed();
     return deviceRequest<RelayCommandResult>(`/api/relays/${channel}/acknowledge`, {
       method: "POST",
-      body: { requestId: generateRequestId() },
+      body: { ...buildCommandEnvelope() },
     });
   },
   relayClear: async (channel) => {
     assertRelayCommandAllowed();
     return deviceRequest<RelayCommandResult>(`/api/relays/${channel}/clear`, {
       method: "POST",
-      body: { requestId: generateRequestId() },
+      body: { ...buildCommandEnvelope() },
     });
   },
 };

@@ -33,7 +33,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "PLTS Monitor — 48V LiFePO4 Solar Monitoring",
   description:
-    "Progressive Web App for monitoring a 48V LiFePO4 PLTS (solar) system — INA219 battery current, ESP32 ADC voltage, ACS712 AC current, SHT31 ambient T/H. Monitoring-only: no relays, no actuators.",
+    "Progressive Web App for a 48V LiFePO4 PLTS (solar) system — INA219 battery current, ESP32 ADC voltage, ACS712 AC current, SHT31 ambient T/H, 8-channel relay control with safety lockout, OTA with signed firmware, alarms and reports.",
   keywords: [
     "PLTS",
     "48V",
@@ -65,7 +65,7 @@ export const metadata: Metadata = {
   },
   openGraph: {
     title: "PLTS Monitor — 48V LiFePO4 Solar Monitoring",
-    description: "PWA for monitoring a 48V LiFePO4 PLTS system (monitoring-only)",
+    description: "PWA for a 48V LiFePO4 PLTS system — monitoring, relay control, OTA and alarms",
     type: "website",
   },
 };
