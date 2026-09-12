@@ -56,6 +56,13 @@ export function generateRequestId(): string {
  * The SAME transactionId is reused across transport retries (TXN-09):
  * a network timeout + retry hits the firmware journal as DUPLICATE and
  * replays the original ACK instead of executing twice.
+ *
+ * [audit p.418 / contract v3] requestId is the TRANSPORT identity and MAY
+ * differ from transactionId (the logical identity): a retry may present a
+ * fresh requestId with the SAME transactionId so attempts stay
+ * distinguishable in the firmware audit trail. This client keeps
+ * requestId === transactionId (fresh command = fresh logical identity —
+ * fully compliant with both v2 and v3).
  */
 export const COMMAND_TTL_SEC = 60;
 
@@ -70,7 +77,7 @@ export function buildCommandEnvelope(): {
   const issuedAt = Math.floor(Date.now() / 1000);
   return {
     requestId,
-    transactionId: requestId, // single-logical-command semantics (v2 contract)
+    transactionId: requestId, // v2-compliant single-logical-command semantics
     version: 1,
     issuedAt,
     expiresAt: issuedAt + COMMAND_TTL_SEC,
