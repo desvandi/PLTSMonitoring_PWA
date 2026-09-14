@@ -55,6 +55,12 @@ export function describeSoc(
   now: number = Date.now(),
   bmsConnected?: boolean
 ): SocDisplay {
+  // [audit r5 / p.445 — cross-layer companion] The firmware persists and
+  // sends `soc.lastSync` as UNIX epoch SECONDS (uint32_t — ms does not fit);
+  // the demo mock and pre-contract payloads use epoch ms. Normalize at the
+  // display boundary until the round-6 cross-layer time contract pins one
+  // domain for every producer (device REST, MQTT, GAS rows).
+  const syncMs = normalizeLastSyncMs(soc.lastSync);
   const sourceLabels: Record<SocState["source"], string> = {
     COULOMB_COUNTING: "Coulomb Counting",
     VOLTAGE_SYNC: "Voltage Sync",
@@ -78,7 +84,7 @@ export function describeSoc(
       sourceLabel: sourceLabels[soc.source],
       confidenceLabel: conf.label,
       confidenceColor: conf.color,
-      lastSyncLabel: soc.lastSync ? formatLastSync(soc.lastSync, now) : null,
+      lastSyncLabel: syncMs ? formatLastSync(syncMs, now) : null,
       provenance,
       provenanceLabel: prov.label,
       provenanceColor: prov.color,
@@ -91,11 +97,24 @@ export function describeSoc(
     sourceLabel: sourceLabels[soc.source],
     confidenceLabel: conf.label,
     confidenceColor: conf.color,
-    lastSyncLabel: soc.lastSync ? formatLastSync(soc.lastSync, now) : "Never",
+    lastSyncLabel: syncMs ? formatLastSync(syncMs, now) : "Never",
     provenance,
     provenanceLabel: prov.label,
     provenanceColor: prov.color,
   };
+}
+
+/**
+ * [audit r5 / p.445 — cross-layer companion] Single-domain normalization for
+ * the SOC sync timestamp. Firmware sends UNIX epoch SECONDS (uint32_t:
+ * ~1.76e9 for 2026). Mock / older payloads send epoch MS (~1.76e12). The
+ * discrimination threshold 1e11 cleanly separates the two domains for any
+ * plausible date (seconds-epoch values stay far below it until year ~5138;
+ * ms-epoch values are far above it since 2001). 0 / negative / null = unknown.
+ */
+export function normalizeLastSyncMs(v: number | null | undefined): number | null {
+  if (v == null || v <= 0) return null;
+  return v < 100_000_000_000 ? v * 1000 : v;
 }
 
 function formatLastSync(syncMs: number, now: number): string {

@@ -102,7 +102,7 @@ export interface SocState {
   quality: MeasurementQuality;  // always ESTIMATED unless synchronized
   source: 'COULOMB_COUNTING' | 'VOLTAGE_SYNC' | 'FULL_CHARGE_DETECTED';
   method: 'ESTIMATED' | 'SYNCHRONIZED' | 'BMS_DIRECT';
-  lastSync: number | null;     // ms epoch of last full-charge sync
+  lastSync: number | null;     // last sync — firmware sends UNIX epoch SECONDS (uint32_t), mock sends ms; normalized by normalizeLastSyncMs() [p.445]
   confidence: 'HIGH' | 'MEDIUM' | 'LOW' | 'BASELINE_AGING';
   provenance?: SocProvenance;  // v1.6.0 — absent on older firmware/GAS rows
 }
