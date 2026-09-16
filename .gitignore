@@ -42,3 +42,5 @@ public/firmware/provenance.json
 dev.log
 server.log
 3100
+.vercel
+.env*
