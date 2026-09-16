@@ -66,7 +66,24 @@ async function fetchWithRetry(url, opts, { timeoutMs = 15000, tries = 1, delayMs
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
-        return await fetch(url, { ...opts, signal: ctrl.signal, cache: "no-store" });
+        const res = await fetch(url, { ...opts, signal: ctrl.signal, cache: "no-store" });
+        // [SELF-AUDIT 2026-09-17] Blip edge Vercel (DEPLOYMENT_NOT_FOUND 404 /
+        // 502-504) bersifat transien — pantau diamati pulih dalam hitungan
+        // menit. Retry hanya status transien; 4xx lain (mis. 401/403) gagal
+        // cepat karena menunjukkan masalah nyata, bukan blip.
+        if (process.env.SMOKE_DEBUG) {
+          const dbgBody = await res.clone().text().catch(() => "?");
+          console.error(`[dbg] ${i+1}/${tries} ${url.slice(0,55)} -> ${res.status} vid=${(res.headers.get("x-vercel-id")||"-").slice(0,38)} server=${res.headers.get("server")} body=${dbgBody.slice(0,90).replace(/\n/g," ")}`);
+        }
+        if ((res.status === 404 || res.status === 502 || res.status === 503 ||
+             res.status === 504) && i + 1 < tries) {
+          // Hygiene undici: batalkan body yang tidak dibaca agar koneksi
+          // keep-alive kembali ke pool (mencegah pool habis saat retry).
+          await res.body?.cancel().catch(() => {});
+          await new Promise((r) => setTimeout(r, delayMs));
+          continue;
+        }
+        return res;
       } finally {
         clearTimeout(t);
       }
@@ -84,7 +101,9 @@ async function fetchWithRetry(url, opts, { timeoutMs = 15000, tries = 1, delayMs
 console.log("== [1/2] Monitoring PWA:", MONITORING, "==");
 
 // 1a. Tunggu deployment baru (commit SHA cocok) — Vercel build ~1-3 menit.
-const WAIT_TRIES = EXPECT_SHA ? 18 : 1; // ~6 menit maksimum
+// [SELF-AUDIT 2026-09-17] Tanpa --expect-sha pun, run manual pernah gagal
+// palsu karena blip edge transien — beri minimal 3 percobaan selalu.
+const WAIT_TRIES = EXPECT_SHA ? 18 : 3; // ~6 menit maksimum (mode CI)
 let health = null;
 let healthHeaders = null;
 try {
