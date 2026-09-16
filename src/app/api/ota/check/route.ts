@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { requireAuth, verifyCsrfToken } from '@/lib/auth';
 import { getFirmwareInfo, isMockAuthEnabled } from '@/lib/mockStore';
-import { ok, fail, unauthorized } from '@/lib/apiResponse';
+import { authFailure, fail, ok } from '@/lib/apiResponse';
 
 export const runtime = 'nodejs';
 
@@ -13,8 +13,8 @@ export const runtime = 'nodejs';
 // release-tag-protection ACTIVE) — `releases/latest` is consulted ONLY for
 // mismatch detection and is NEVER a source of OTA identity.
 export async function POST(req: NextRequest) {
-  const auth = await requireAuth();
-  if (!auth.ok) return unauthorized(auth.message);
+  const auth = await requireAuth({ mutation: true });
+  if (!auth.ok) return authFailure(auth);
   if (!(await verifyCsrfToken(req))) return fail('Invalid CSRF token', 403);
 
   // Demo mode: return mock store values.

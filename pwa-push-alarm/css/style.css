@@ -189,3 +189,25 @@ main {
   }
   .btn-primary { color: #ffffff; }
 }
+
+/* ---------- [P0-1/p.493] Form provisioning runtime ---------- */
+#setup-form { display: flex; flex-direction: column; gap: 0.35rem; margin: 0.75rem 0; }
+#setup-form label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-top: 0.6rem;
+}
+#setup-form input {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+}
+#setup-form input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+#setup-form .push-actions { margin-top: 1rem; }
+#setup-form code { font-size: 0.85em; }

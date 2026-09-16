@@ -18,13 +18,172 @@
     pollTimer: null,
     consecutiveFailures: 0,
     lastUpdated: null,
-    connectionBannerShown: false
+    connectionBannerShown: false,
+    config: null  // [p.493/P0-1] konfigurasi efektif (runtime > build-time)
   };
+
+  /* ---------------------------------------------------------------- */
+  /* [AUDIT p.493 / P0-1] Konfigurasi runtime & provisioning           */
+  /* ---------------------------------------------------------------- */
+  /*
+   * Prioritas sumber konfigurasi:
+   *   1. Provisioning runtime (layar setup) -> sessionStorage
+   *      'push.provisioning' = {apiBase, vapid}
+   *      (kredensial device disimpan TERPISAH di sessionStorage
+   *      'push.deviceId' / 'push.deviceToken' - token push khusus
+   *      langganan, bukan FW_DEVICE_TOKEN).
+   *   2. Konfigurasi build-time APP_CONFIG (disuntik tools/build-config.js
+   *      dari env PUSH_API_BASE / PUSH_VAPID_PUBLIC_KEY).
+   *
+   * Bila hasil akhir kosong/placeholder -> aplikasi menampilkan layar
+   * setup yang JUJUR ("Belum dikonfigurasi") dan TIDAK melakukan
+   * polling/push ke server palsu. Tidak ada lagi kegagalan diam-diam.
+   */
+  const PLACEHOLDER_RE = /GANTI_DENGAN|AKfycbxGANTI|example\.com|localhost/i;
+
+  function readRuntimeProvisioning() {
+    try {
+      const raw = sessionStorage.getItem('push.provisioning');
+      if (!raw) return null;
+      const p = JSON.parse(raw);
+      if (p && typeof p === 'object') {
+        return {
+          apiBase: typeof p.apiBase === 'string' ? p.apiBase.trim() : '',
+          vapid: typeof p.vapid === 'string' ? p.vapid.trim() : ''
+        };
+      }
+    } catch (e) { /* korup/absen: abaikan */ }
+    return null;
+  }
+
+  function resolveEffectiveConfig() {
+    const runtime = readRuntimeProvisioning();
+    const buildApi = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.API_BASE) || '';
+    const buildVapid = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.VAPID_PUBLIC_KEY) || '';
+    const apiBase = (runtime && runtime.apiBase) || String(buildApi).trim();
+    const vapid = (runtime && runtime.vapid) || String(buildVapid).trim();
+    const clean = (v) => v && !PLACEHOLDER_RE.test(v) ? v : '';
+    return {
+      apiBase: clean(apiBase),
+      vapid: clean(vapid),
+      provisioned: !!(clean(apiBase) && clean(vapid))
+    };
+  }
+
+  function isDeviceConfigured() {
+    try {
+      const id = (sessionStorage.getItem('push.deviceId') || '').trim();
+      const tok = (sessionStorage.getItem('push.deviceToken') || '').trim();
+      return !!(id && tok);
+    } catch (e) { return false; }
+  }
+
+  function showSetupScreen(reason) {
+    const setup = document.getElementById('section-setup');
+    const main = document.getElementById('section-sensors');
+    if (setup) setup.hidden = false;
+    if (main) main.hidden = true;
+    const el = document.getElementById('setup-reason');
+    if (el && reason) el.textContent = reason;
+    const btnE = document.getElementById('btn-enable-push');
+    const btnD = document.getElementById('btn-disable-push');
+    if (btnE) btnE.disabled = true;
+    if (btnD) btnD.disabled = true;
+    setConnectionStatus('offline');
+  }
+
+  function hideSetupScreen() {
+    const setup = document.getElementById('section-setup');
+    const main = document.getElementById('section-sensors');
+    if (setup) setup.hidden = true;
+    if (main) main.hidden = false;
+  }
+
+  function bindSetupForm() {
+    const form = document.getElementById('setup-form');
+    if (!form) return;
+    form.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      const apiBase = String(document.getElementById('setup-api-base').value || '').trim();
+      const vapid = String(document.getElementById('setup-vapid').value || '').trim();
+      const deviceId = String(document.getElementById('setup-device-id').value || '').trim();
+      const token = String(document.getElementById('setup-device-token').value || '').trim();
+      const statusEl = document.getElementById('setup-status');
+
+      const bad = (msg) => {
+        if (statusEl) { statusEl.textContent = msg; statusEl.className = 'push-status push-status--error'; }
+      };
+
+      if (!/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(apiBase)) {
+        bad('URL GAS tidak valid - harus format https://script.google.com/macros/s/<ID>/exec');
+        return;
+      }
+      if (!vapid || vapid.length < 80 || !/^[A-Za-z0-9_-]+$/.test(vapid)) {
+        bad('Kunci publik VAPID tidak valid (base64url, kurva P-256).');
+        return;
+      }
+      if (!deviceId || !token) {
+        bad('Device ID dan push token wajib diisi (push token = PUSH_TOKENS di GAS, BUKAN token firmware).');
+        return;
+      }
+
+      try {
+        sessionStorage.setItem('push.provisioning', JSON.stringify({ apiBase: apiBase, vapid: vapid }));
+        sessionStorage.setItem('push.deviceId', deviceId);
+        sessionStorage.setItem('push.deviceToken', token);
+      } catch (e) {
+        bad('Gagal menyimpan konfigurasi sesi: ' + e.message);
+        return;
+      }
+      // Muat ulang agar seluruh state (SW, polling) memakai konfigurasi baru.
+      location.reload();
+    });
+
+    const btnClear = document.getElementById('setup-clear');
+    if (btnClear) {
+      btnClear.addEventListener('click', () => {
+        try {
+          sessionStorage.removeItem('push.provisioning');
+          sessionStorage.removeItem('push.deviceId');
+          sessionStorage.removeItem('push.deviceToken');
+        } catch (e) { /* abaikan */ }
+        location.reload();
+      });
+    }
+
+    // Tombol "Pengaturan / Provisioning" pada mode operasi normal — buka
+    // kembali layar setup tanpa menghapus konfigurasi yang sudah jalan.
+    const btnOpen = document.getElementById('btn-open-setup');
+    if (btnOpen) {
+      btnOpen.addEventListener('click', () => {
+        const setup = document.getElementById('section-setup');
+        if (setup) {
+          setup.hidden = false;
+          setup.scrollIntoView({ behavior: 'smooth' });
+        }
+      });
+    }
+  }
 
   /* ---------------------------------------------------------------- */
   /* Inisialisasi                                                      */
   /* ---------------------------------------------------------------- */
   document.addEventListener('DOMContentLoaded', () => {
+    state.config = resolveEffectiveConfig();
+    bindSetupForm();
+
+    if (!state.config.provisioned) {
+      // [P0-1] Keadaan jujur: deployment belum dikonfigurasi. JANGAN
+      // menghubungi server placeholder/palsu - tampilkan layar setup.
+      showSetupScreen(
+        'Deployment ini belum diprovision: URL GAS / kunci VAPID belum diatur ' +
+        'pada build (PUSH_API_BASE / PUSH_VAPID_PUBLIC_KEY) atau lewat form ini. ' +
+        'Lihat PROVISIONING.md.');
+      registerServiceWorker(); // SW tetap teregistrasi untuk update app
+      return;
+    }
+
+    hideSetupScreen();
     registerServiceWorker();
     initPushUI();
     loadSensorData();
@@ -50,11 +209,7 @@
           });
         });
         registerPeriodicSync(reg);
-        // [SELF-AUDIT 2026-09-16] Kirim kredensial perangkat (kontrak GAS
-        // K-7) ke SW aktif — resubscribe() latar belakang membutuhkannya.
-        // Best-effort: SW belum aktif -> dilewati; dikirim ulang saat
-        // halaman dibuka berikutnya.
-        sendDeviceCredentialsToSw();
+        sendRuntimeStateToSw();
       })
       .catch((err) => {
         // SW gagal -> PWA jadi aplikasi biasa; alarm push tidak tersedia.
@@ -63,23 +218,21 @@
   }
 
   /**
-   * [SELF-AUDIT 2026-09-16] Dorong kredensial perangkat (localStorage
-   * 'push.deviceId' / 'push.deviceToken', fallback APP_CONFIG.DEVICE_ID /
-   * DEVICE_TOKEN) ke service worker aktif. SW tidak bisa membaca localStorage
-   * sendiri; kredensial disimpan SW hanya di memori (tidak dipersist).
+   * [AUDIT p.493 / P0-1] Dorong konfigurasi runtime non-rahasia (URL GAS)
+   * dan kredensial perangkat (sessionStorage) ke service worker aktif.
+   * SW menyimpan keduanya HANYA di memori - tidak dipersist. Dikirim
+   * ulang setiap halaman dibuka karena SW bisa restart kapan saja.
    */
-  function sendDeviceCredentialsToSw() {
+  function sendRuntimeStateToSw() {
     try {
-      var deviceId = (localStorage.getItem('push.deviceId') || '').trim();
-      var deviceToken = (localStorage.getItem('push.deviceToken') || '').trim();
-      if (!deviceId && typeof APP_CONFIG !== 'undefined' && APP_CONFIG.DEVICE_ID) {
-        deviceId = String(APP_CONFIG.DEVICE_ID).trim();
-      }
-      if (!deviceToken && typeof APP_CONFIG !== 'undefined' && APP_CONFIG.DEVICE_TOKEN) {
-        deviceToken = String(APP_CONFIG.DEVICE_TOKEN).trim();
-      }
       var target = navigator.serviceWorker.controller;
-      if (!target) return; // SW belum mengendalikan halaman — coba load berikutnya
+      if (!target) return; // SW belum mengendalikan halaman - coba load berikutnya
+      target.postMessage({
+        type: 'PLTS_PUSH_ALARM_RUNTIME_CONFIG',
+        config: { apiBase: state.config ? state.config.apiBase : '' }
+      });
+      var deviceId = (sessionStorage.getItem('push.deviceId') || '').trim();
+      var deviceToken = (sessionStorage.getItem('push.deviceToken') || '').trim();
       target.postMessage({
         type: 'PLTS_PUSH_ALARM_DEVICE_CREDENTIALS',
         credentials: (deviceId && deviceToken)
@@ -115,7 +268,8 @@
   /* ---------------------------------------------------------------- */
 
   async function loadSensorData() {
-    const url = APP_CONFIG.API_BASE +
+    if (!state.config || !state.config.apiBase) return; // belum diprovision
+    const url = state.config.apiBase +
       '?action=snapshot&t=' + Date.now(); // cache-buster
     try {
       const res = await fetchWithTimeout(url, APP_CONFIG.FETCH_TIMEOUT_MS);
@@ -231,9 +385,20 @@
     const statusEl = document.getElementById('push-status');
 
     state.pushManager = new AlarmPushManager(
-      APP_CONFIG.API_BASE, APP_CONFIG.VAPID_PUBLIC_KEY);
+      state.config.apiBase, state.config.vapid);
 
     if (!btnEnable || !btnDisable || !statusEl) return;
+
+    // [P0-1/K-7] Tanpa kredensial perangkat, tombol aktifasi dinonaktifkan -
+    // GAS menolak subscribe tanpa device.id + push token.
+    if (!isDeviceConfigured()) {
+      btnEnable.disabled = true;
+      statusEl.textContent =
+        'Kredensial perangkat belum diisi untuk sesi ini. Buka layar setup ' +
+        '(tombol Pengaturan di bawah) dan masukkan Device ID + push token.';
+      statusEl.className = 'push-status push-status--error';
+      return;
+    }
 
     // Izin notifikasi HANYA boleh diminta dari gestur klik,
     // bukan otomatis saat halaman dibuka.
@@ -310,9 +475,20 @@
   }
 
   async function requestTestPush() {
+    // [P1 hardening] testPush kini membutuhkan autentikasi di sisi GAS -
+    // rate limit bukan authorization. Kirim push token dari sesi.
     try {
-      await fetchWithTimeout(
-        APP_CONFIG.API_BASE + '?action=testPush', APP_CONFIG.FETCH_TIMEOUT_MS);
+      const creds = state.pushManager && state.pushManager._deviceCredentials
+        ? state.pushManager._deviceCredentials() : null;
+      await fetchWithTimeout(state.config.apiBase + '?action=testPush',
+        APP_CONFIG.FETCH_TIMEOUT_MS, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'testPush',
+            ...(creds ? { device: { id: creds.deviceId }, token: creds.token } : {})
+          })
+        });
     } catch (e) { /* best effort; status tetap sukses */ }
   }
 
@@ -320,11 +496,12 @@
   /* Util                                                              */
   /* ---------------------------------------------------------------- */
 
-  async function fetchWithTimeout(url, timeoutMs) {
+  async function fetchWithTimeout(url, timeoutMs, options) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      return await fetch(url, { signal: ctrl.signal, credentials: 'omit' });
+      return await fetch(url, Object.assign(
+        { signal: ctrl.signal, credentials: 'omit' }, options || {}));
     } finally {
       clearTimeout(timer);
     }

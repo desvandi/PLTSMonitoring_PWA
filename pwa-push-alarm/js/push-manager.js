@@ -173,26 +173,29 @@ class AlarmPushManager {
   /* Internal                                                            */
   /* ------------------------------------------------------------------ */
 
-  /* [SELF-AUDIT 2026-09-16] Kredensial perangkat untuk kontrak GAS K-7:
-   * subscribe/unsubscribe WAJIB membawa device.id + token (token yang sama
-   * dengan yang dipakai firmware untuk `ingest`). Sumber: APP_CONFIG
-   * (DEVICE_ID / DEVICE_TOKEN — untuk template) atau localStorage
-   * ('push.deviceId' / 'push.deviceToken' — untuk operator tanpa mengedit
-   * file). Tanpa kredensial, payload tetap dikirim apa adanya dan GAS
-   * menolak dengan pesan yang jujur (fail-closed di sisi server). */
+  /* [AUDIT p.493 REMEDIATION 2026-09-16] Kredensial perangkat untuk
+   * kontrak GAS K-7 kini HIDUP HANYA SELAMA SESI BROWSER:
+   *
+   *   sumber    : provisioning runtime (layar setup) -> sessionStorage
+   *   fallback  : APP_CONFIG (build-time; sejak p.493 TIDAK berisi
+   *               kredensial apa pun - string kosong)
+   *   larangan  : localStorage TIDAK PERNAH dipakai untuk kredensial
+   *
+   * localStorage 'push.deviceId' / 'push.deviceToken' versi lama
+   * dimigrasikan SEKALI ke sessionStorage lalu DIHAPUS dari localStorage
+   * (menghapus jejak persisten yang bisa selamat dari restart browser).
+   *
+   * Token yang disimpan adalah PUSH token khusus langganan (GAS Script
+   * Property PUSH_TOKENS) - BUKAN FW_DEVICE_TOKEN milik firmware, jadi
+   * kompromi PWA push tidak serta-merta membuka jalur ingest telemetry. */
   _deviceCredentials() {
+    migrateLegacyCredentials_();
     let deviceId = '';
     let deviceToken = '';
     try {
-      deviceId = (localStorage.getItem('push.deviceId') || '').trim();
-      deviceToken = (localStorage.getItem('push.deviceToken') || '').trim();
-    } catch (e) { /* localStorage bisa diblokir */ }
-    if (!deviceId && typeof APP_CONFIG !== 'undefined' && APP_CONFIG.DEVICE_ID) {
-      deviceId = String(APP_CONFIG.DEVICE_ID).trim();
-    }
-    if (!deviceToken && typeof APP_CONFIG !== 'undefined' && APP_CONFIG.DEVICE_TOKEN) {
-      deviceToken = String(APP_CONFIG.DEVICE_TOKEN).trim();
-    }
+      deviceId = (sessionStorage.getItem('push.deviceId') || '').trim();
+      deviceToken = (sessionStorage.getItem('push.deviceToken') || '').trim();
+    } catch (e) { /* sessionStorage bisa diblokir */ }
     return (deviceId && deviceToken) ? { deviceId: deviceId, token: deviceToken } : null;
   }
 
@@ -288,6 +291,29 @@ class AlarmPushManager {
 }
 
 /* Util global ------------------------------------------------------- */
+
+/** [p.493] Migrasi sekali-jalan: kredensial versi lama yang tersisa di
+ *  localStorage dipindahkan ke sessionStorage lalu DIHAPUS dari disk.
+ *  Idempoten - setelah bersih, pemanggilan berikutnya tidak berbuat apa
+ *  pun. Endpoint 'push.endpoint' (host saja, bukan rahasia) tetap
+ *  diperbolehkan di localStorage untuk diagnostik. */
+function migrateLegacyCredentials_() {
+  try {
+    var legacyId = (localStorage.getItem('push.deviceId') || '').trim();
+    var legacyToken = (localStorage.getItem('push.deviceToken') || '').trim();
+    if (legacyId && legacyToken) {
+      if (!sessionStorage.getItem('push.deviceId')) {
+        sessionStorage.setItem('push.deviceId', legacyId);
+      }
+      if (!sessionStorage.getItem('push.deviceToken')) {
+        sessionStorage.setItem('push.deviceToken', legacyToken);
+      }
+    }
+    // Hapus persisten apa pun hasilnya - sessionStorage menang selanjutnya.
+    localStorage.removeItem('push.deviceId');
+    localStorage.removeItem('push.deviceToken');
+  } catch (e) { /* storage diblokir: abaikan */ }
+}
 
 /**
  * Konversi base64url (tanpa padding) ke Uint8Array untuk

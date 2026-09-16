@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { requireAuth, verifyCsrfToken } from '@/lib/auth';
 import { generateRandomToken } from '@/lib/jwt';
-import { ok, fail, unauthorized } from '@/lib/apiResponse';
+import { authFailure, fail, ok } from '@/lib/apiResponse';
 
 export const runtime = 'nodejs';
 
@@ -9,8 +9,8 @@ export const runtime = 'nodejs';
 const tokens = new Map<string, number>();
 
 export async function POST(req: NextRequest) {
-  const auth = await requireAuth();
-  if (!auth.ok) return unauthorized(auth.message);
+  const auth = await requireAuth({ mutation: true });
+  if (!auth.ok) return authFailure(auth);
   if (!(await verifyCsrfToken(req))) return fail('Invalid CSRF token', 403);
 
   // [audit-2 S-9 FIX] Sweep expired tokens on every prepare. Previously,

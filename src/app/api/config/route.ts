@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { requireAuth, verifyCsrfToken } from '@/lib/auth';
 import { getConfig, updateConfig, isMockAuthEnabled } from '@/lib/mockStore';
-import { ok, fail, unauthorized, serviceUnavailable } from '@/lib/apiResponse';
+import { authFailure, fail, ok, serviceUnavailable, unauthorized } from '@/lib/apiResponse';
 import type { DeviceConfig } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -21,8 +21,8 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const auth = await requireAuth();
-  if (!auth.ok) return unauthorized(auth.message);
+  const auth = await requireAuth({ mutation: true });
+  if (!auth.ok) return authFailure(auth);
   // [PARITY-4] Mock fail-closed: this Next.js route is DEMO NAMESPACE
   // ONLY — in production the authoritative data comes from the device /
   // GAS (NEXT_PUBLIC_API_BASE_URL or the MQTT provider), never from here.
