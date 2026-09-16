@@ -173,7 +173,31 @@ class AlarmPushManager {
   /* Internal                                                            */
   /* ------------------------------------------------------------------ */
 
+  /* [SELF-AUDIT 2026-09-16] Kredensial perangkat untuk kontrak GAS K-7:
+   * subscribe/unsubscribe WAJIB membawa device.id + token (token yang sama
+   * dengan yang dipakai firmware untuk `ingest`). Sumber: APP_CONFIG
+   * (DEVICE_ID / DEVICE_TOKEN — untuk template) atau localStorage
+   * ('push.deviceId' / 'push.deviceToken' — untuk operator tanpa mengedit
+   * file). Tanpa kredensial, payload tetap dikirim apa adanya dan GAS
+   * menolak dengan pesan yang jujur (fail-closed di sisi server). */
+  _deviceCredentials() {
+    let deviceId = '';
+    let deviceToken = '';
+    try {
+      deviceId = (localStorage.getItem('push.deviceId') || '').trim();
+      deviceToken = (localStorage.getItem('push.deviceToken') || '').trim();
+    } catch (e) { /* localStorage bisa diblokir */ }
+    if (!deviceId && typeof APP_CONFIG !== 'undefined' && APP_CONFIG.DEVICE_ID) {
+      deviceId = String(APP_CONFIG.DEVICE_ID).trim();
+    }
+    if (!deviceToken && typeof APP_CONFIG !== 'undefined' && APP_CONFIG.DEVICE_TOKEN) {
+      deviceToken = String(APP_CONFIG.DEVICE_TOKEN).trim();
+    }
+    return (deviceId && deviceToken) ? { deviceId: deviceId, token: deviceToken } : null;
+  }
+
   async _sendSubscriptionToServer(subscription, action) {
+    const creds = this._deviceCredentials();
     const payload = {
       action: action, // 'subscribe' | 'unsubscribe'
       endpoint: subscription.endpoint,
@@ -181,6 +205,8 @@ class AlarmPushManager {
         p256dh: subscription.toJSON().keys.p256dh,
         auth: subscription.toJSON().keys.auth
       },
+      // [SELF-AUDIT 2026-09-16] GAS K-7: autentikasi perangkat naik ke body.
+      ...(creds ? { device: { id: creds.deviceId }, token: creds.token } : {}),
       context: {
         lang: (navigator.language || 'id').slice(0, 8),
         tz: this._safeIntlTimeZone(),

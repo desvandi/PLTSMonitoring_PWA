@@ -70,6 +70,7 @@ function writeMap(map: Record<string, string>): void {
   if (!store) {
     memoryStore.clear();
     for (const [k, v] of Object.entries(map)) memoryStore.set(k, v);
+    emitTokensChangedEvent();
     return;
   }
   try {
@@ -77,6 +78,25 @@ function writeMap(map: Record<string, string>): void {
     else store.setItem(STORAGE_KEY, JSON.stringify(map));
   } catch {
     /* quota/disabled — memory fallback keeps this session functional */
+  }
+  emitTokensChangedEvent();
+}
+
+/**
+ * [SELF-AUDIT 2026-09-16] Notify same-tab listeners (e.g. PushAlarmBridge)
+ * that the session token map changed — sessionStorage does NOT fire the
+ * `storage` event within the tab that wrote it, so an explicit event is the
+ * only reliable in-tab signal. The push-alarm bridge uses it to re-push the
+ * active device credentials to the service worker (GAS K-7 contract).
+ */
+export const AUTH_TOKENS_CHANGED_EVENT = 'plts:auth-tokens-changed';
+
+function emitTokensChangedEvent(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.dispatchEvent(new CustomEvent(AUTH_TOKENS_CHANGED_EVENT));
+  } catch {
+    /* non-DOM context — ignore */
   }
 }
 

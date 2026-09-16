@@ -21,15 +21,19 @@ import {
   PUSH_ALARM_CONFIG_EVENT,
   PUSH_ALARM_CONFIG_STORAGE_KEY,
   PUSH_ALARM_ENDPOINT_HOST_KEY,
+  buildSubscriptionBody,
   urlBase64ToUint8Array,
   validatePushAlarmConfig,
   type PushAlarmConfig,
   type PushAlarmConfigValidation,
+  type PushDeviceCredentials,
 } from "./shared";
 import {
   clearPushAlarmRuntimeConfig,
   savePushAlarmRuntimeConfig,
 } from "./sw-config-store";
+import { readSysConfig } from "@/lib/sysConfig";
+import { resolveAuthToken } from "@/lib/authTokenSession";
 
 /** Default build-time (di-inject saat `next build`; kosong = isi via Settings). */
 const BUILD_TIME_API_BASE = process.env.NEXT_PUBLIC_PUSH_API_BASE || "";
@@ -183,6 +187,41 @@ export async function syncPushAlarmConfigToServiceWorker(): Promise<void> {
   }
 }
 
+/**
+ * [SELF-AUDIT 2026-09-16] Push the ACTIVE device credentials to the service
+ * worker (IN-MEMORY ONLY — never persisted to IndexedDB, preserving the
+ * p.483 posture that session credentials live no longer than the session).
+ * The SW needs them for `pushsubscriptionchange` re-registration: the GAS
+ * K-7 contract rejects a subscribe without device.id + token.
+ * Called on mount, on AUTH_TOKENS_CHANGED_EVENT, and on window focus.
+ */
+export async function syncPushAlarmDeviceCredentialsToServiceWorker(): Promise<void> {
+  if (!isBrowser() || !("serviceWorker" in navigator)) return;
+  try {
+    const credentials = resolveActiveDeviceCredentials();
+    const send = (worker: ServiceWorker | null): void => {
+      if (worker) {
+        worker.postMessage({
+          type: "PLTS_PUSH_ALARM_DEVICE_CREDENTIALS",
+          credentials: credentials
+            ? { deviceId: credentials.deviceId, token: credentials.token }
+            : null,
+        });
+      }
+    };
+    const controller = navigator.serviceWorker.controller;
+    if (controller) {
+      send(controller);
+      return;
+    }
+    void navigator.serviceWorker.ready
+      .then((registration) => send(registration.active))
+      .catch(() => undefined);
+  } catch {
+    /* best-effort */
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Dukungan browser & izin
 // -----------------------------------------------------------------------------
@@ -230,13 +269,21 @@ async function sendSubscriptionToServer(
   action: "subscribe" | "unsubscribe",
 ): Promise<{ ok: boolean; message?: string }> {
   const json = subscription.toJSON();
+  // [SELF-AUDIT 2026-09-16] GAS K-7 contract: subscribe/unsubscribe MUST
+  // carry the ACTIVE device identity (device.id + token — the same token the
+  // firmware uses for `ingest`). Without it GAS rejects the registration
+  // fail-closed ("Langganan butuh autentikasi perangkat").
+  const creds = resolveActiveDeviceCredentials();
   const payload = {
-    action,
-    endpoint: subscription.endpoint,
-    keys: {
-      p256dh: json.keys?.p256dh,
-      auth: json.keys?.auth,
-    },
+    ...buildSubscriptionBody(
+      action,
+      subscription.endpoint,
+      {
+        p256dh: json.keys?.p256dh ?? "",
+        auth: json.keys?.auth ?? "",
+      },
+      creds,
+    ),
     context: {
       lang: (navigator.language || "id").slice(0, 8),
       tz: safeIntlTimeZone(),
@@ -278,6 +325,28 @@ function rememberEndpointHost(subscription: PushSubscription): void {
     window.localStorage.setItem(PUSH_ALARM_ENDPOINT_HOST_KEY, hostOf(subscription.endpoint));
   } catch {
     /* abaikan */
+  }
+}
+
+/**
+ * [SELF-AUDIT 2026-09-16] Resolve the ACTIVE device's push-registration
+ * credentials: deviceId from PLTS_SYS_CONFIG (active_device_id) and the
+ * auth token from the session-scoped store (see authTokenSession.ts —
+ * viewer credential, NEVER persisted to localStorage). Returns null when
+ * either half is unavailable; callers treat that as fail-closed.
+ */
+function resolveActiveDeviceCredentials(): PushDeviceCredentials | null {
+  try {
+    const config = readSysConfig();
+    if (!config || config.devices.length === 0) return null;
+    const active =
+      config.devices.find((d) => d.device_id === config.active_device_id) ??
+      config.devices[0]!;
+    const token = resolveAuthToken(active).trim();
+    if (!active.device_id || !token) return null;
+    return { deviceId: active.device_id, token };
+  } catch {
+    return null;
   }
 }
 
@@ -331,6 +400,20 @@ export async function enablePushAlarm(): Promise<PushAlarmResult> {
       ok: false,
       state: "invalid-config",
       message: `${check.message} Isi dulu di panel "Server Push Alarm" pada Settings.`,
+    };
+  }
+  // [SELF-AUDIT 2026-09-16] GAS K-7: registration REQUIRES the active
+  // device identity. Fail fast BEFORE asking for notification permission —
+  // requesting permission we cannot use degrades trust and leaves a phantom
+  // "granted" state for a registration that GAS will reject anyway.
+  if (!resolveActiveDeviceCredentials()) {
+    return {
+      ok: false,
+      state: "missing-device-credentials",
+      message:
+        "GAS menolak langganan tanpa autentikasi perangkat: buka/autentikasi " +
+        "perangkat aktif di sesi ini terlebih dahulu (device.id + token diperlukan " +
+        "saat mendaftarkan push alarm).",
     };
   }
   if (getPushAlarmPermission() === "denied") {

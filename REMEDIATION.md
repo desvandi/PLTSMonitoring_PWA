@@ -221,3 +221,31 @@ input → validate (page) → persist → **SW revalidate** → use.
 - Setelah PWA ter-deploy: redeploy GAS PushService (repo firmware,
   `push-alarm/gas/Code.gs`) agar kontrak ackToken aktif — deploy PWA dulu,
   GAS kemudian (kompatibel dua arah selama transisi).
+
+## Self-Audit 2026-09-16 (pra-audit final) — kontrak GAS K-7 pada push-alarm
+
+Ditemukan & diperbaiki SEBELUM auditor masuk: kontrak `subscribe` GAS
+(audit-2 K-7) mewajibkan `device.id` + `token`, tetapi registrasi push PWA
+tidak mengirimkannya — setelah GAS di-redeploy sesuai catatan operator,
+tombol "Aktifkan notifikasi" akan ditolak. Perbaikan menyeluruh:
+
+1. **`src/lib/push-alarm/shared.ts`** — `buildSubscriptionBody()`: pembangun
+   payload murni + tipe `PushDeviceCredentials` (unit-testable).
+2. **`src/lib/push-alarm/client.ts`** — `resolveActiveDeviceCredentials()`
+   (perangkat aktif dari PLTS_SYS_CONFIG + token sesi); payload subscribe/
+   unsubscribe membawa `device:{id}` + `token`; `enablePushAlarm()` gagal
+   cepat SEBELUM meminta izin notifikasi bila kredensial tidak tersedia.
+3. **`src/sw.ts` + bridge** — kredensial diteruskan ke SW via
+   `PLTS_PUSH_ALARM_DEVICE_CREDENTIALS` (HANYA memori SW, tidak dipersist —
+   postur p.483 dipertahankan); `resubscribePushAlarm()` membawa kredensial,
+   dan batal fail-closed saat SW dingin tanpa kredensial (mencegah keadaan
+   "berlangganan" palsu yang diam-diam tidak menerima apa pun).
+   `authTokenSession` memancarkan `plts:auth-tokens-changed` agar bridge
+   mengirim ulang kredensial saat login/logout.
+4. **`pwa-push-alarm/` (deployment standalone)** — push-manager.js, sw.js,
+   app.js, config.js membawa kontrak yang sama (kredensial via localStorage
+   `push.deviceId`/`push.deviceToken` atau `APP_CONFIG.DEVICE_ID/TOKEN`).
+
+Verifikasi: 265/265 vitest (+5 regresi K-7), tsc bersih, eslint 0 error,
+audit silang PWA-GAS-FW 164/164 (K-7 positif + negatif: subscribe/unsubscribe
+tanpa/salah token DITOLAK).

@@ -14,6 +14,7 @@ import {
   ALARM_VIEW_TARGET,
   alarmTitleOf,
   buildAlarmNotificationOptions,
+  buildSubscriptionBody,
   decodeVapidPublicKey,
   isValidGasWebAppUrl,
   urlBase64ToUint8Array,
@@ -121,6 +122,63 @@ describe('isValidGasWebAppUrl', () => {
     expect(isValidGasWebAppUrl('https://script.google.com/macros/s/AKfycbxABC/dev')).toBe(false);
     expect(isValidGasWebAppUrl('https://script.googleusercontent.com/macros/s/x/exec')).toBe(false);
     expect(isValidGasWebAppUrl('')).toBe(false);
+  });
+});
+
+describe('buildSubscriptionBody (kontrak GAS K-7 — device auth pada subscribe/unsubscribe)', () => {
+  // [SELF-AUDIT 2026-09-16] Regresi kontrak: Code.gs (audit-2 K-7) MENOLAK
+  // subscribe tanpa device.id + token. Payload PWA harus membawa keduanya.
+  const KEYS = { p256dh: 'B'.repeat(86), auth: 'c2VjcmV0LWF1dGgta2V5' };
+
+  it('membawa device.id + token saat kredensial tersedia', () => {
+    const body = buildSubscriptionBody('subscribe', 'https://fcm.example/e/1', KEYS, {
+      deviceId: 'esp32-greenhouse-01',
+      token: 'tok-abc',
+    });
+    expect(body.action).toBe('subscribe');
+    expect(body.endpoint).toBe('https://fcm.example/e/1');
+    expect(body.keys).toEqual(KEYS);
+    expect((body.device as { id?: string })?.id).toBe('esp32-greenhouse-01');
+    expect(body.token).toBe('tok-abc');
+  });
+
+  it('menyertakan kredensial yang sama untuk unsubscribe (simetri FIX B)', () => {
+    const body = buildSubscriptionBody('unsubscribe', 'https://fcm.example/e/1', KEYS, {
+      deviceId: 'dev-x',
+      token: 'tok-y',
+    });
+    expect((body.device as { id?: string })?.id).toBe('dev-x');
+    expect(body.token).toBe('tok-y');
+  });
+
+  it('MENGHILANGKAN field kredensial saat tidak ada (GAS menolak — fail-closed jujur)', () => {
+    const body = buildSubscriptionBody('subscribe', 'https://fcm.example/e/1', KEYS, null);
+    expect(body).not.toHaveProperty('device');
+    expect(body).not.toHaveProperty('token');
+  });
+
+  it('mengabaikan kredensial setengah isi (id tanpa token, atau sebaliknya)', () => {
+    const noToken = buildSubscriptionBody('subscribe', 'https://fcm.example/e/1', KEYS, {
+      deviceId: 'dev-x',
+      token: '',
+    });
+    expect(noToken).not.toHaveProperty('device');
+    expect(noToken).not.toHaveProperty('token');
+    const noId = buildSubscriptionBody('subscribe', 'https://fcm.example/e/1', KEYS, {
+      deviceId: '',
+      token: 'tok-y',
+    });
+    expect(noId).not.toHaveProperty('device');
+    expect(noId).not.toHaveProperty('token');
+  });
+
+  it('tidak pernah membocorkan token ke URL — token hanya naik lewat body', () => {
+    const body = buildSubscriptionBody('subscribe', 'https://fcm.example/e/1', KEYS, {
+      deviceId: 'dev-x',
+      token: 'secret-token-value',
+    });
+    expect(body.endpoint).not.toContain('secret-token-value');
+    expect(JSON.stringify(body)).toContain('secret-token-value'); // hanya di body
   });
 });
 
