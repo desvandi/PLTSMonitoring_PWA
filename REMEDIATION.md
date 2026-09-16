@@ -249,3 +249,65 @@ tombol "Aktifkan notifikasi" akan ditolak. Perbaikan menyeluruh:
 Verifikasi: 265/265 vitest (+5 regresi K-7), tsc bersih, eslint 0 error,
 audit silang PWA-GAS-FW 164/164 (K-7 positif + negatif: subscribe/unsubscribe
 tanpa/salah token DITOLAK).
+
+---
+
+## Putaran 2026-09-16 (p.492, p.493, P0-1, CI-binding, governance)
+
+### p.492 — JWT revocation fail-closed (P2)
+- `src/lib/revocation-store.ts`: verifikasi kini TRI-STATE
+  (`revoked`/`verified`). Redis unreachable ATAU tidak terkonfigurasi di
+  production → `verified:false` — TIDAK ada lagi fallback process-local
+  diam-diam di production. Cache lokal menjadi POSITIVE-only revocation
+  cache (jawaban negatif tidak pernah di-cache).
+- `src/lib/auth.ts`: `requireAuth({ mutation: true })` → 503 fail-closed
+  untuk SEMUA route mutasi (17 route POST di-update: OTA, config,
+  calibration, reboot, factory_reset, acknowledge, import, dsb.). Read path
+  tetap fail-open terdokumentasi (pola alternatif yang disetujui auditor).
+- `src/lib/apiResponse.ts`: `authFailure()` memetakan 401/403/503 dengan
+  benar (503 tidak salah label jadi 401).
+- Test baru `revocation-failclosed.test.ts` (10 asersi R1-R5).
+
+### p.493 — Push credential keluar dari localStorage (P2)
+- `pwa-push-alarm/js/push-manager.js`: kredensial dari sessionStorage;
+  migrasi sekali-jalan dari localStorage lama lalu DIHAPUS.
+- `pwa-push-alarm/js/config.js`: template KOSONG (tidak ada placeholder
+  palsu); kredensial tidak pernah ada di file.
+- `pwa-push-alarm/sw.js`: kredensial hanya di memori SW (postMessage).
+- Desain push-scoped token: PUSH_TOKENS di GAS (kapabilitas subscribe/
+  unsubscribe saja) ≠ FW_DEVICE_TOKEN (ingest) — kompromi push ≠ kompromi
+  ingest. Diimplementasikan di backend GAS kedua repo.
+
+### P0-1 — Push Alarm production placeholder
+- `tools/build-config.js` BARU: menyuntik nilai produksi dari env
+  (PUSH_API_BASE, PUSH_VAPID_PUBLIC_KEY, PUSH_PROFILE). Profil production
+  tanpa env/placeholder → BUILD GAGAL. Profil preview → APP_PROVISIONED
+  =false + layar setup runtime yang jujur.
+- `js/app.js` + `index.html`: layar setup runtime (URL GAS, VAPID, device
+  ID, push token) → sessionStorage; keadaan "belum dikonfigurasi"
+  ditampilkan eksplisit, tidak ada polling ke server palsu.
+- `sw.js`: API_BASE dinamis (postMessage + cache config.js) — konstanta
+  placeholder dihapus permanen; ACK memakai apiBase dari payload GAS.
+- `tools/verify-deployment.js`: dukung format build + profil.
+- `PROVISIONING.md` BARU: runbook lengkap.
+
+### CI-binding (P0 auditor)
+- `scripts/live-smoke-test.mjs` BARU: smoke test DEPLOYMENT AKTIF —
+  commit-binding (VERCEL_GIT_COMMIT_SHA), release identity sync vs
+  release-policy.json, deployment mode eksplisit, security header live,
+  kontrak provisioning jujur push alarm.
+- `/api/health`: mengekspos `release` (tag, inSync, commitSha) +
+  `deploymentMode` (browser-configured vs server-assisted) — non-sensitif.
+- CI: job `push-alarm-config` (gate 3 arah), `live-deployment-smoke`
+  (post-deploy, commit-bound), `release-gate` (tag v* mewajibkan push
+  alarm provisioned penuh).
+
+### Governance Vercel
+- `VERCEL_PROJECTS.md` BARU: matriks otoritas deployment.
+- Proyek duplikat salah-link `pwa-push-alarm` DIHAPUS dari Vercel
+  (2026-09-16; tanpa domain custom; sisa insiden salah-link).
+- `plts-monitor-push-alarm`: buildCommand `node tools/build-config.js`.
+
+Verifikasi putaran ini: vitest 275/275 (+10 baru), tsc bersih, eslint 0
+error, `next build` sukses, audit silang push 181/181 (K1-K9, termasuk 14
+asesi baru K9), verify-deployment SIAP DEPLOY pada template jujur.

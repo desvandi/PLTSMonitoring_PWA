@@ -27,7 +27,7 @@
 import { cookies } from "next/headers";
 import { verifyJwt, generateRandomToken, signJwt } from "@/lib/jwt";
 import { getJwtSecret, isMockAuthEnabled } from "@/lib/mockStore";
-import { revokeJti, isJtiRevoked } from "@/lib/revocation-store";
+import { revokeJti, verifyRevocation } from "@/lib/revocation-store";
 
 export const JWT_COOKIE = "plts_jwt";
 export const CSRF_COOKIE = "plts_csrf";
@@ -42,34 +42,60 @@ export type AuthResult = {
   username: string | null;
   expiresAt: number | null;
   role: "operator" | "viewer" | null;
+  /** [p.492] false ⇒ the GLOBAL revocation check could not be completed.
+  * Reads may continue (documented fail-open); mutations MUST fail closed. */
+  revocationVerified: boolean;
+};
+
+const UNAUTHENTICATED: AuthResult = {
+  authenticated: false,
+  username: null,
+  expiresAt: null,
+  role: null,
+  revocationVerified: true,
 };
 
 export async function getSession(): Promise<AuthResult> {
   if (!isMockAuthEnabled()) {
-    return { authenticated: false, username: null, expiresAt: null, role: null };
+    return UNAUTHENTICATED;
   }
   const cookieStore = await cookies();
   const token = cookieStore.get(JWT_COOKIE)?.value;
-  if (!token) return { authenticated: false, username: null, expiresAt: null, role: null };
+  if (!token) return UNAUTHENTICATED;
   const secret = getJwtSecret();
-  if (!secret) return { authenticated: false, username: null, expiresAt: null, role: null };
+  if (!secret) return UNAUTHENTICATED;
   const payload = verifyJwt(token, secret);
-  if (!payload) return { authenticated: false, username: null, expiresAt: null, role: null };
-  // [audit-2 K-4 / p.479] Shared revocation check — consults the shared store
-  // (Redis) so an instance that never saw the logout still rejects the JWT.
-  if (typeof payload.jti === "string" && (await isJtiRevoked(payload.jti))) {
-    return { authenticated: false, username: null, expiresAt: null, role: null };
+  if (!payload) return UNAUTHENTICATED;
+  // [audit-2 K-4 / p.479 / p.492] Shared revocation check — TRI-STATE.
+  // `revoked` rejects immediately; `verified === false` is carried up so
+  // requireAuth({ mutation: true }) can fail CLOSED for state changes.
+  const revocation = typeof payload.jti === "string"
+    ? await verifyRevocation(payload.jti)
+    : { revoked: false, verified: true };
+  if (revocation.revoked) {
+    return UNAUTHENTICATED;
   }
   return {
     authenticated: true,
     username: payload.sub ?? null,
     expiresAt: payload.exp,
     role: (payload.role as "operator" | "viewer" | undefined) ?? "operator",
+    revocationVerified: revocation.verified,
   };
 }
 
-export async function requireAuth(): Promise<
-  { ok: true; username: string } | { ok: false; status: 401 | 403; message: string }
+export type RequireAuthOptions = {
+  /** [p.492] true for EVERY state-changing route (POST/PUT/PATCH/DELETE).
+  * When the global revocation check could not be completed (shared store
+  * unreachable / not configured in production), the request fails CLOSED
+  * with 503 instead of trusting the JWT. */
+  mutation?: boolean;
+};
+
+export async function requireAuth(
+  opts: RequireAuthOptions = {},
+): Promise<
+  { ok: true; username: string } | { ok: false; status: 401 | 403 | 503; message: string }
 > {
   const session = await getSession();
   if (!session.authenticated) {
@@ -80,6 +106,19 @@ export async function requireAuth(): Promise<
   // route) that uses this gate is operator-gated by construction.
   if (session.role === "viewer") {
     return { ok: false, status: 403, message: "Forbidden — viewer scope cannot use this endpoint" };
+  }
+  // [p.492] FAIL-CLOSED for mutations: no global revocation proof ⇒ no
+  // mutation. "Redis unavailable → DO NOT trust JWT → 503", NOT "Redis
+  // unavailable → assume the JWT is still valid".
+  if (opts.mutation && !session.revocationVerified) {
+    return {
+      ok: false,
+      status: 503,
+      message:
+        "Revocation verification unavailable — mutation blocked (fail-closed, audit p.492). " +
+        "The shared revocation store could not be reached; a possibly-revoked session " +
+        "must not be allowed to change device state. Retry when the store recovers.",
+    };
   }
   return { ok: true, username: session.username! };
 }

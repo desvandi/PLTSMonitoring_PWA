@@ -54,8 +54,48 @@
   <div id="banner" class="banner" role="alert" aria-live="assertive"></div>
 
   <main>
+    <!-- ============== LAYAR SETUP (P0-1: keadaan jujur saat belum diprovision) ============== -->
+    <section id="section-setup" hidden aria-labelledby="setup-heading">
+      <div class="section-head">
+        <h2 id="setup-heading">Pengaturan / Provisioning</h2>
+      </div>
+      <div class="push-card">
+        <p id="setup-reason" class="push-desc" role="status" aria-live="polite"></p>
+        <p class="push-desc">
+          Isi konfigurasi di bawah untuk menghubungkan PWA ini ke backend GAS Anda.
+          Semua nilai disimpan <strong>hanya untuk sesi browser ini</strong> (sessionStorage)
+          &mdash; tidak ada kredensial yang bertahan melewati tutup tab/browser (audit p.493).
+        </p>
+        <form id="setup-form" autocomplete="off">
+          <label for="setup-api-base">URL Web App GAS (API_BASE)</label>
+          <input id="setup-api-base" name="api-base" type="url" inputmode="url"
+                 placeholder="https://script.google.com/macros/s/.../exec" required>
+
+          <label for="setup-vapid">Kunci publik VAPID (base64url)</label>
+          <input id="setup-vapid" name="vapid" type="text" inputmode="latin"
+                 placeholder="BIiRx... (65 byte, P-256)" required>
+
+          <label for="setup-device-id">Device ID</label>
+          <input id="setup-device-id" name="device-id" type="text" required>
+
+          <label for="setup-device-token">Push token (PUSH_TOKENS di GAS &mdash; BUKAN token firmware)</label>
+          <input id="setup-device-token" name="device-token" type="password" required>
+
+          <div class="push-actions">
+            <button type="submit" class="btn btn-primary">Simpan &amp; Muat Ulang</button>
+            <button type="button" id="setup-clear" class="btn btn-secondary">Hapus Konfigurasi Sesi</button>
+          </div>
+        </form>
+        <p id="setup-status" class="push-status" role="status" aria-live="polite"></p>
+        <p class="push-hint muted">
+          Panduan lengkap provisioning (deploy GAS, VAPID, PUSH_TOKENS, env Vercel):
+          lihat <code>PROVISIONING.md</code> pada repositori.
+        </p>
+      </div>
+    </section>
+
     <!-- ====================== SENSOR ====================== -->
-    <section aria-labelledby="sensor-heading">
+    <section id="section-sensors" aria-labelledby="sensor-heading">
       <div class="section-head">
         <h2 id="sensor-heading">Sensor</h2>
         <span id="last-updated" class="muted"></span>
@@ -99,6 +139,11 @@
           Tips iOS: pasang aplikasi ke Layar Utama (Share &rarr; Add to Home Screen),
           minimal iOS 16.4, agar notifikasi push berfungsi.
         </p>
+        <div class="push-actions">
+          <button id="btn-open-setup" type="button" class="btn btn-secondary">
+            Pengaturan / Provisioning
+          </button>
+        </div>
       </div>
     </section>
   </main>

@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { requireAuth, verifyCsrfToken } from '@/lib/auth';
 import { getDailyEnergy, isMockAuthEnabled } from '@/lib/mockStore';
-import { ok, unauthorized, fail, serviceUnavailable } from '@/lib/apiResponse';
+import { authFailure, fail, ok, serviceUnavailable } from '@/lib/apiResponse';
 import { aggregateDaily } from '@/lib/reports';
 
 export const runtime = 'nodejs';
@@ -12,8 +12,8 @@ export const runtime = 'nodejs';
 // energy history belongs to the GAS backend (DAILY action) — this route has
 // NO real data source and must not serve 7 days of Math.random() fabrication.
 export async function POST(req: NextRequest) {
-  const auth = await requireAuth();
-  if (!auth.ok) return unauthorized(auth.message);
+  const auth = await requireAuth({ mutation: true });
+  if (!auth.ok) return authFailure(auth);
   // [WAVE-7 / PW7-1] CSRF double-submit — POST /api/reports adalah satu-satunya
   // route mutasi yang TIDAK memverifikasi CSRF (semua route POST lain sudah).
   // Konsistensi defense-in-depth: same-site strict cookie sudah melindungi,

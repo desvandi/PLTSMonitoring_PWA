@@ -1,35 +1,49 @@
 /*
- * Konfigurasi aplikasi MonitorIoT PWA.
+ * Konfigurasi aplikasi MonitorIoT PWA (Push Alarm standalone).
  * ------------------------------------------------------------------
- * API_BASE          : URL Web App Google Apps Script (deploy sebagai
- *                     "Anyone" untuk operasi subscribe/unsubscribe).
- * VAPID_PUBLIC_KEY  : kunci publik VAPID (base64url, kurva P-256).
- *                     Dibuat dengan tools/generate-vapid-keys.js.
- *                     Kunci PUBLIK aman ditanam di klien.
- *                     Kunci PRIVAT hanya disimpan di GAS
- *                     (Script Properties), TIDAK PERNAH di sini.
+ * [AUDIT p.493 / P0-1 REMEDIATION 2026-09-16]
+ *
+ * FILE INI ADALAH TEMPLATE DEFAULT — BUKAN tempat nilai produksi.
+ * Nilai produksi disuntikkan saat BUILD oleh tools/build-config.js dari
+ * environment variable (PUSH_API_BASE, PUSH_VAPID_PUBLIC_KEY). Repo
+ * sengaja menyimpan string KOSONG (bukan URL palsu): deployment yang
+ * belum diprovision akan menampilkan layar "Belum dikonfigurasi" yang
+ * JUJUR, bukan gagal diam-diam dengan placeholder.
+ *
+ * API_BASE          : URL Web App Google Apps Script (GAS) — diisi saat
+ *                     build dari PUSH_API_BASE, atau lewat layar setup
+ *                     runtime (disimpan hanya di sessionStorage).
+ * VAPID_PUBLIC_KEY  : kunci publik VAPID (base64url, P-256) — nilai
+ *                     PUBLIK, aman ditanam di klien. Kunci PRIVAT hanya
+ *                     di GAS (Script Properties), TIDAK PERNAH di sini.
+ *
+ * KREDENSIAL PERANGKAT (deviceId + push token) TIDAK lagi berada di file
+ * ini dan TIDAK lagi dipersist di localStorage (audit p.493):
+ *   - Dimasukkan lewat layar setup runtime → sessionStorage (sesi saja),
+ *     dihapus saat tab/browser ditutup.
+ *   - Diteruskan ke service worker hanya via postMessage — SW
+ *     menyimpannya di MEMORI saja (hilang saat SW restart, halaman
+ *     mengirim ulang saat dibuka).
+ *   - Token yang dipakai adalah PUSH token khusus langganan (Script
+ *     Property PUSH_TOKENS di GAS) — BUKAN FW_DEVICE_TOKEN yang dipakai
+ *     firmware untuk ingest, sehingga kompromi PWA push tidak serta-merta
+ *     menjadi kompromi kredensial ingest telemetry.
  */
 'use strict';
 
 const APP_CONFIG = {
-  // Ganti dengan URL deployment GAS Anda:
-  API_BASE: 'https://script.google.com/macros/s/AKfycbxGANTI_DENGAN_ID_DEPLOYMENT_ANDA/exec',
+  // Dibelakang layar: build-config.js menimpa ini dari PUSH_API_BASE.
+  // Kosong = belum diprovision (build-time); runtime dapat diisi via setup.
+  API_BASE: '',
 
-  // Ganti dengan public key VAPID milik Anda (dari generate-vapid-keys.js):
-  VAPID_PUBLIC_KEY: 'BIiRx1N3GANTI_DENGAN_PUBLIC_KEY_VAPID_ANDA_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+  // Dibelakang layar: build-config.js menimpa ini dari PUSH_VAPID_PUBLIC_KEY.
+  VAPID_PUBLIC_KEY: '',
 
-  // [SELF-AUDIT 2026-09-16] Kontrak GAS K-7: subscribe/unsubscribe wajib
-  // autentikasi perangkat. Isi device id + token perangkat Anda (token yang
-  // sama dengan yang dikirim firmware untuk `ingest`; GAS memvalidasinya
-  // via Script Property FW_DEVICE_TOKEN / FW_DEVICE_TOKENS).
-  // Alternatif tanpa mengedit file ini: set localStorage
-  // 'push.deviceId' dan 'push.deviceToken' dari DevTools console.
-  // Kosongkan keduanya bila backend GAS Anda masih versi lama (tanpa K-7).
-  DEVICE_ID: '',
-  DEVICE_TOKEN: '',
+  // [p.493] Kredensial perangkat TIDAK ada di sini. Lihat layar setup
+  // runtime (sessionStorage) — dihapus dari template ini secara permanen.
 
   // Versi aplikasi - dipakai untuk diagnostik & cache busting:
-  APP_VERSION: '2.0.0',
+  APP_VERSION: '2.1.0',
 
   // Interval polling data sensor (ms) saat aplikasi terbuka:
   POLL_INTERVAL_MS: 30000,
@@ -41,12 +55,19 @@ const APP_CONFIG = {
   CONNECTION_BANNER_AFTER_FAILURES: 2
 };
 
+/* Status provisioning build-time — build-config.js menulis true hanya bila
+ * PUSH_API_BASE + PUSH_VAPID_PUBLIC_KEY valid terpasang. Aplikasi memakai
+ * ini (plus provisioning runtime) untuk memutuskan: layar setup vs operasi
+ * normal. Tidak ada lagi keadaan "placeholder yang tampak sehat". */
+const APP_PROVISIONED = false;
+
 // Membekukan konfigurasi agar tidak dapat diubah saat runtime (anti-tamper ringan).
 try {
   Object.freeze(APP_CONFIG);
+  Object.freeze(APP_PROVISIONED);
 } catch (e) { /* older browsers: ignore */ }
 
 // Ekspor untuk pengujian di Node (tidak berdampak di browser).
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = APP_CONFIG;
+  module.exports = { APP_CONFIG: APP_CONFIG, APP_PROVISIONED: APP_PROVISIONED };
 }

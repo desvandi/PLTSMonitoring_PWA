@@ -83,22 +83,42 @@ let swSrc = '';
 try { swSrc = fs.readFileSync(swPath, 'utf8'); }
 catch (e) { bad('Tidak dapat membaca ' + swPath); process.exit(1); }
 
-const cfgApi = /API_BASE:\s*'([^']+)'/.exec(cfgSrc);
-const swApi = /const API_BASE =\s*'([^']+)'/.exec(swApiSafe(swSrc));
+const cfgApi = /API_BASE:\s*['"]([^'"]+)['"]/.exec(cfgSrc);
+const swApi = /const API_BASE =\s*['"]([^'"]+)['"]/.exec(swApiSafe(swSrc));
 function swApiSafe(src) { return src; } // placeholder agar terbaca alur
 
 const cfgUrl = cfgApi ? cfgApi[1] : null;
-const swUrl = (swApi ? swApi[1] : null) || (/(?:const API_BASE =)\s*'([^']+)'/.exec(swSrc) || [])[1];
-const cfgKey = /VAPID_PUBLIC_KEY:\s*'([^']+)'/.exec(cfgSrc);
+const swUrl = (swApi ? swApi[1] : null) || (/(?:const API_BASE =)\s*['"]([^'"]+)['"]/.exec(swSrc) || [])[1];
+const cfgKey = /VAPID_PUBLIC_KEY:\s*['"]([^'"]+)['"]/.exec(cfgSrc);
 const cfgPub = cfgKey ? cfgKey[1] : null;
 
+/* [P0-1] Status provisioning build-time — hasil tools/build-config.js. */
+const cfgProvisioned = /APP_PROVISIONED\s*=\s*true/.test(cfgSrc);
+const profile = String(process.env.PUSH_PROFILE || 'preview').toLowerCase();
+
 /* ---------- 2. Konsistensi URL ---------- */
-if (!cfgUrl) bad('API_BASE tidak ditemukan di config.js');
-if (!swUrl) bad('API_BASE tidak ditemukan di sw.js');
-if (cfgUrl && swUrl) {
-  if (cfgUrl === swUrl) ok('API_BASE config.js === API_BASE sw.js');
-  else bad('API_BASE BERBEDA! config.js=' + cfgUrl + ' | sw.js=' + swUrl +
-    ' -> push tanpa payload & ACK akan mengarah ke server yang salah.');
+// [P0-1] Template kosong adalah state yang SAH pada profil preview —
+// aplikasi akan menampilkan layar setup runtime. Hanya profil production
+// yang mewajibkan nilai terisi (dicek di seksi 5 + build-config.js).
+if (!cfgUrl && profile === 'production') {
+  bad('API_BASE tidak ditemukan di config.js (profil production wajib terisi).');
+} else if (!cfgUrl) {
+  info('API_BASE kosong (template preview) — provisioning via layar setup runtime atau build-config.js.');
+}
+if (swUrl) {
+  // Rilis lama masih menanam API_BASE langsung di sw.js — pastikan nilainya
+  // sinkron dengan config.js (mismatch = ACK/fallback ke server salah).
+  if (cfgUrl) {
+    if (cfgUrl === swUrl) ok('API_BASE config.js === API_BASE sw.js');
+    else bad('API_BASE BERBEDA! config.js=' + cfgUrl + ' | sw.js=' + swUrl +
+      ' -> push tanpa payload & ACK akan mengarah ke server yang salah.');
+  }
+} else if (/function getApiBase_/.test(swSrc)) {
+  // [P0-1] Desain baru: sw.js menurunkan API_BASE saat runtime (postMessage
+  // halaman -> cache config.js). Tidak ada lagi konstanta yang bisa basi.
+  ok('sw.js memakai getApiBase_() dinamis (runtime config) — tidak ada URL tertanam.');
+} else {
+  bad('sw.js tidak memiliki API_BASE maupun getApiBase_() — fallback push & ACK tidak akan tahu kemana harus mengirim.');
 }
 const urlToCheck = urlArg || cfgUrl;
 if (urlToCheck) {
@@ -113,10 +133,13 @@ if (urlToCheck) {
     ok('API_BASE bukan placeholder');
   }
 }
-
 /* ---------- 3. Validitas kunci publik PWA ---------- */
 if (!cfgPub) {
-  bad('VAPID_PUBLIC_KEY tidak ditemukan di config.js');
+  if (profile === 'production') {
+    bad('VAPID_PUBLIC_KEY tidak ditemukan di config.js (profil production wajib terisi).');
+  } else {
+    info('VAPID_PUBLIC_KEY kosong (template preview) — diisi via layar setup runtime atau build-config.js.');
+  }
 } else {
   if (/GANTI_DENGAN/.test(cfgPub)) {
     bad('VAPID_PUBLIC_KEY masih placeholder - ganti dengan kunci dari generate-vapid-keys.js');
@@ -183,7 +206,21 @@ if (privB64) {
     '(jalankan ulang dengan --keys vapid-keys.json untuk uji penuh).');
 }
 
-/* ---------- 5. Pengingat manual ---------- */
+/* ---------- 5. Status provisioning (P0-1: kejujuran deployment) ---------- */
+if (profile === 'production') {
+  if (cfgProvisioned && cfgUrl && cfgPub) {
+    ok('Profil PRODUCTION: APP_PROVISIONED=true dengan API_BASE + VAPID terisi.');
+  } else {
+    bad('Profil PRODUCTION tetapi config belum terprovision (APP_PROVISIONED bukan true / nilai kosong). ' +
+      'Jalankan tools/build-config.js dengan PUSH_API_BASE + PUSH_VAPID_PUBLIC_KEY.');
+  }
+} else if (cfgUrl || cfgPub) {
+  ok(`Profil ${profile}: nilai build terdeteksi (provisioned=${cfgProvisioned}).`);
+} else {
+  info(`Profil ${profile}: config kosong — aplikasi akan menampilkan layar setup runtime (jujur, bukan gagal diam-diam).`);
+}
+
+/* ---------- 6. Pengingat manual ---------- */
 console.log('');
 info('Pastikan juga (manual): Script Properties GAS berisi VAPID_PUBLIC_KEY & ' +
   'VAPID_PRIVATE_KEY yang sama, dan FW_DEVICE_TOKEN sudah dibuat.');

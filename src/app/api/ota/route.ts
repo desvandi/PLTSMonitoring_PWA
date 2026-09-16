@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, verifyCsrfToken } from '@/lib/auth';
-import { fail, unauthorized } from '@/lib/apiResponse';   // [audit-2] 'ok' removed (unused after P1-5 rewrite)
+import { authFailure, fail } from '@/lib/apiResponse';   // [audit-2] 'ok' removed (unused after P1-5 rewrite)
 
 export const runtime = 'nodejs';
 
@@ -36,8 +36,8 @@ const API_BASE_URL =
   '';
 
 export async function POST(req: NextRequest) {
-  const auth = await requireAuth();
-  if (!auth.ok) return unauthorized(auth.message);
+  const auth = await requireAuth({ mutation: true });
+  if (!auth.ok) return authFailure(auth);
   if (!(await verifyCsrfToken(req))) return fail('Invalid CSRF token', 403);
 
   if (!API_BASE_URL) {

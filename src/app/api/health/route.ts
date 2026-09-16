@@ -12,6 +12,11 @@
 // =============================================================================
 
 import { ok } from "@/lib/apiResponse";
+import {
+  AUTHORIZED_PRODUCTION_TAG,
+  resolveReleaseChannel,
+} from "@/lib/release-policy";
+import { EXPECTED_FIRMWARE_TAG } from "@/lib/release-identity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -112,12 +117,40 @@ export async function GET(request: Request) {
         error: "NEXT_PUBLIC_GAS_INSIGHTS_URL tidak diset",
       };
 
+  // [AUDIT R1 2026-09-16] Release identity + deployment mode — NON-SENSITIVE
+  // facts exposed so the post-deploy smoke test (CI) can prove the LIVE
+  // deployment matches release-policy.json and can tell Mode A (browser/
+  // LAN-configured, zero server-side control plane) from Mode B (server-
+  // assisted). Values are policy tags and booleans — no secrets.
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "";
+  const serverSideControlPlane =
+    checks.mqttBrokerConfigured || checks.gasUrlConfigured || checks.jwtSecretConfigured;
+
   return ok(
     {
       service: "plts-monitor-pwa",
       nodeEnv: process.env.NODE_ENV ?? null,
       via: viaCron ? "cron" : "manual",
       timestamp: new Date().toISOString(),
+      release: {
+        authorizedProductionTag: AUTHORIZED_PRODUCTION_TAG,
+        expectedFirmwareTag: EXPECTED_FIRMWARE_TAG,
+        channel: resolveReleaseChannel(),
+        inSync: EXPECTED_FIRMWARE_TAG === AUTHORIZED_PRODUCTION_TAG,
+        // Vercel injects the deployed commit at build time — lets the
+        // post-deploy smoke test PROVE it is testing the new deployment,
+        // not a stale one.
+        commitSha: process.env.VERCEL_GIT_COMMIT_SHA || null,
+      },
+      deploymentMode: {
+        // 'server-assisted' (Mode B: Vercel holds MQTT/GAS/JWT env) vs
+        // 'browser-configured' (Mode A: operator enters device/GAS config
+        // in the browser; zero-touch deployment model — documented in
+        // sysConfig.ts). The dashboard must never PRETEND a control plane
+        // exists when it does not.
+        mode: serverSideControlPlane ? "server-assisted" : "browser-configured",
+        directRestConfigured: apiBase.length > 0,
+      },
       checks,
       gasPing,
     },

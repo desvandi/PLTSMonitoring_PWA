@@ -15,6 +15,7 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
 
@@ -267,3 +268,106 @@ jobs:
               sys.exit(1)
           print("PASS: legacy manifest declares productionOtaAuthority=none (no 'latest' ambiguity)")
           PY
+
+  # --------------------------------------------------------------------------
+  # [AUDIT P0-1 / P0 CI-BINDING 2026-09-16] Push-alarm configuration gate.
+  # The auditor proved the LIVE production push alarm still served the
+  # placeholder config (AKfycbxGANTI_DENGAN...) while CI was green. Root
+  # cause: no gate ever validated the push-alarm artifact. This job makes
+  # the repo template STAY placeholder-free and proves the build gate
+  # BLOCKS an unprovisioned production profile.
+  # --------------------------------------------------------------------------
+  push-alarm-config:
+    name: Push-alarm config template & build gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: "Repo template must be placeholder-free (empty = honest setup screen)"
+        run: node pwa-push-alarm/tools/verify-deployment.js
+
+      - name: "Build gate: production profile WITHOUT env MUST BLOCK (exit 1)"
+        run: |
+          set +e
+          PUSH_PROFILE=production node pwa-push-alarm/tools/build-config.js --check
+          rc=$?
+          set -e
+          if [ "$rc" -ne 1 ]; then
+            echo "GATE BROKEN: unprovisioned production profile must BLOCK (expected exit 1, got $rc)"
+            exit 1
+          fi
+          echo "OK: unprovisioned production blocked"
+
+      - name: "Build gate: production profile with placeholder env MUST BLOCK"
+        run: |
+          set +e
+          PUSH_PROFILE=production \
+          PUSH_API_BASE='https://script.google.com/macros/s/AKfycbxGANTI_DENGAN_ID/exec' \
+          PUSH_VAPID_PUBLIC_KEY='BIiRx1N3GANTI_DENGAN_KEY' \
+          node pwa-push-alarm/tools/build-config.js --check
+          rc=$?
+          set -e
+          if [ "$rc" -ne 1 ]; then
+            echo "GATE BROKEN: placeholder env must BLOCK (expected exit 1, got $rc)"
+            exit 1
+          fi
+          echo "OK: placeholder env blocked"
+
+      - name: "Build gate: production profile with VALID env MUST PASS"
+        run: |
+          PUSH_PROFILE=production \
+          PUSH_API_BASE='https://script.google.com/macros/s/AKfycbxCItestFixtures012345/exec' \
+          PUSH_VAPID_PUBLIC_KEY='BMBoMtRSkmJml4bzNEvEtjLwlxvcYU8XnBr2AlQKrxhB8d8UgrTCUCwo5uGEZ0taOjRG7yFM-UCx6zwBVoTISUY' \
+          node pwa-push-alarm/tools/build-config.js --check
+
+  # --------------------------------------------------------------------------
+  # [AUDIT P0 CI-BINDING 2026-09-16] LIVE deployment smoke test. The old
+  # pipeline proved "the validator works on synthetic env" and "the build
+  # works on empty env" — it never looked at what Vercel actually serves.
+  # This job checks the ACTIVE production deployments after Vercel finishes:
+  # release identity sync (R1), commit binding, explicit deployment mode,
+  # live security headers, and the push-alarm honest-provisioning contract.
+  # --------------------------------------------------------------------------
+  live-deployment-smoke:
+    name: Live deployment smoke test (post-deploy)
+    runs-on: ubuntu-latest
+    needs: [build, cross-repo-contract, push-alarm-config]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: "Smoke test the ACTIVE production deployments (waits for Vercel)"
+        run: node scripts/live-smoke-test.mjs
+        env:
+          MONITORING_URL: https://jmse-plts-monitoring.vercel.app
+          PUSH_ALARM_URL: https://plts-monitor-push-alarm.vercel.app
+          EXPECTED_SHA: ${{ github.sha }}
+
+  # --------------------------------------------------------------------------
+  # [AUDIT R2 2026-09-16] RELEASE GATE (tags v*): a production RELEASE of the
+  # push alarm requires FULL provisioning — live APP_PROVISIONED=true with a
+  # valid GAS URL and a 65-byte VAPID key. On main, the honest "not
+  # provisioned" setup screen is allowed; on a release tag it is a blocker.
+  # --------------------------------------------------------------------------
+  release-gate:
+    name: Release gate — push alarm fully provisioned
+    runs-on: ubuntu-latest
+    needs: [build, cross-repo-contract, push-alarm-config]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: "Push alarm production MUST be provisioned on a release tag"
+        run: node scripts/live-smoke-test.mjs
+        env:
+          MONITORING_URL: https://jmse-plts-monitoring.vercel.app
+          PUSH_ALARM_URL: https://plts-monitor-push-alarm.vercel.app
+          EXPECTED_SHA: ${{ github.sha }}
+          REQUIRE_PROVISIONED: 'true'

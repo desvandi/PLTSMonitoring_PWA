@@ -19,18 +19,38 @@ const SW_VERSION = 'v2.0.0';
 const CACHE_STATIC = 'miot-static-' + SW_VERSION;
 const CACHE_DATA = 'miot-data-' + SW_VERSION;
 
-/* [SELF-AUDIT 2026-09-16] Kredensial perangkat untuk kontrak GAS K-7
- * (subscribe/unsubscribe wajib device.id + token). SW TIDAK bisa membaca
- * localStorage — halaman mengirimkannya via postMessage
- * PLTS_PUSH_ALARM_DEVICE_CREDENTIALS (lihat js/app.js). Hanya di MEMORI:
- * tidak dipersist agar kredensial sesi tidak mengungguli umur proses SW. */
+/* [AUDIT p.493 / P0-1 REMEDIATION 2026-09-16]
+ *
+ * API_BASE tidak lagi ditanam placeholder di file ini (penyebab push
+ * fallback & ACK mengarah ke server palsu di production). Sumber kini:
+ *
+ *   1. postMessage PLTS_PUSH_ALARM_RUNTIME_CONFIG dari halaman (memori)
+ *      — halaman mengirim ulang setiap dibuka.
+ *   2. Cache precache './js/config.js' — nilai build-time non-rahasia
+ *      (URL GAS + public key VAPID memang nilai publik).
+ *
+ * Kredensial perangkat (deviceId/token) tetap HANYA di memori via
+ * postMessage — tidak pernah dipersist dan tidak pernah masuk cache. */
+let runtimeApiBase = null;
 let deviceCredentials = null;
 
-/* Konfigurasi endpoint GAS (harus sama dengan js/config.js).
- * Service worker tidak bisa membaca config.js -> ditanam di sini
- * dan diganti saat build/deploy. */
-const API_BASE =
-  'https://script.google.com/macros/s/AKfycbxGANTI_DENGAN_ID_DEPLOYMENT_ANDA/exec';
+async function getApiBase_() {
+  if (runtimeApiBase) return runtimeApiBase;
+  try {
+    const cached = await caches.match('./js/config.js');
+    if (cached) {
+      const src = await cached.text();
+      // Terima kutip tunggal (template repo) maupun kutip ganda (hasil
+      // build-config.js yang memakai JSON.stringify).
+      const m = /API_BASE:\s*['"]([^'"]*)['"]/.exec(src);
+      if (m && m[1] && m[1].indexOf('GANTI_DENGAN') === -1) {
+        runtimeApiBase = m[1];
+        return runtimeApiBase;
+      }
+    }
+  } catch (e) { /* cache tak terbaca: null */ }
+  return null;
+}
 
 const PRECACHE_URLS = [
   './',
@@ -199,9 +219,11 @@ async function handlePush(event) {
  */
 async function fetchLatestAlarm() {
   try {
+    const apiBase = await getApiBase_();
+    if (!apiBase) return null; // belum diprovision — jangan fetch ke server palsu
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 10000);
-    const res = await fetch(API_BASE + '?action=latestAlarm', {
+    const res = await fetch(apiBase + '?action=latestAlarm', {
       signal: ctrl.signal,
       credentials: 'omit'
     });
@@ -239,7 +261,10 @@ function buildAlarmOptions(p) {
     data: {
       url: p.url || './index.html?from=push',
       alarmId: p.id || null,
-      ackUrl: API_BASE,
+      // [P0-1] ackUrl diisi SAAT notifikasi dibuat (bukan konstanta file):
+      // nilai berasal dari runtime config halaman yang mengirim payload,
+      // atau dari cache build-time — tidak lagi dari placeholder permanen.
+      ackUrl: (typeof p.apiBase === 'string' && p.apiBase) ? p.apiBase : null,
       // [audit p.482 REMEDIATION 2026-09] Capability token ACK (HMAC
       // per-alarm, berlaku terbatas) yang diterbitkan GAS PushService
       // bersama notifikasi. ACK tanpa token valid akan ditolak GAS — siapa
@@ -303,17 +328,18 @@ async function handleNotificationClick(event) {
 
   // Aksi "ack": kirim konfirmasi penanganan alarm ke GAS, tanpa membuka app.
   if (action === 'ack' && data.alarmId) {
-    // [audit-2 K-5] Also validate ackUrl is same-origin or trusted GAS origin.
-    // The ackUrl is constructed by the GAS sender — if GAS is compromised,
-    // ackUrl could point anywhere. Only send ack to known-trusted origins.
+    // [audit-2 K-5 + P0-1] ackUrl dikirim bersama notifikasi oleh GAS/halaman
+    // (data.ackUrl). Tanpa ackUrl yang valid, ACK dilewati — tidak ada lagi
+    // konstanta placeholder yang bisa mengirim ACK ke server palsu.
     try {
-      var ackParsed = new URL(data.ackUrl || '', self.location.origin);
-      var trustedOrigins = [self.location.origin];
-      // Allow GAS script.google.com (the only legitimate ack target).
-      if (ackParsed.hostname === 'script.google.com') {
-        trustedOrigins.push(ackParsed.origin);
-      }
-      if (trustedOrigins.indexOf(ackParsed.origin) !== -1) {
+      if (data.ackUrl) {
+        var ackParsed = new URL(data.ackUrl, self.location.origin);
+        var trustedOrigins = [self.location.origin];
+        // Allow GAS script.google.com (the only legitimate ack target).
+        if (ackParsed.hostname === 'script.google.com') {
+          trustedOrigins.push(ackParsed.origin);
+        }
+        if (trustedOrigins.indexOf(ackParsed.origin) !== -1) {
         // [audit p.482 REMEDIATION 2026-09] ACK membawa capability token dari
         // notifikasi — otorisasi ACK kalah kriptografis, bukan sekadar
         // pengetahuan URL + alarmId.
@@ -327,6 +353,7 @@ async function handleNotificationClick(event) {
           body: JSON.stringify(ackBody),
           credentials: 'omit'
         });
+        }
       }
     } catch (e) { /* ack best-effort */ }
     // Tetap buka app agar pengguna melihat status alarm.
@@ -379,6 +406,8 @@ async function resubscribe() {
     // dipangkas GAS saat push berikutnya memantul 410; operator mengaktifkan
     // ulang dari panel saat aplikasi dibuka.
     if (!deviceCredentials) return;
+    const apiBase = await getApiBase_();
+    if (!apiBase) return; // belum diprovision — jangan kirim ke server palsu
 
     // Ambil applicationServerKey lama agar konsisten.
     const oldKey = reg.options && reg.options.applicationServerKey;
@@ -389,7 +418,7 @@ async function resubscribe() {
       applicationServerKey: oldKey
     });
 
-    await fetch(API_BASE, {
+    await fetch(apiBase, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({
@@ -416,8 +445,24 @@ self.addEventListener('message', (event) => {
     self.skipWaiting();
     return;
   }
-  // [SELF-AUDIT 2026-09-16] Kredensial perangkat dari halaman (kontrak GAS
-  // K-7). Payload divalidasi bentuknya; null/invalid menghapus kredensial
+  // [AUDIT p.493 / P0-1] Runtime config non-rahasia dari halaman: URL GAS
+  // dipakai untuk fallback latestAlarm + ACK. Bernilai publik (URL Web
+  // App), tetap hanya di MEMORI SW — tidak dipersist.
+  if (event.data && typeof event.data === 'object' &&
+      event.data.type === 'PLTS_PUSH_ALARM_RUNTIME_CONFIG') {
+    var cfg = event.data.config || {};
+    if (typeof cfg.apiBase === 'string' &&
+        cfg.apiBase.indexOf('https://') === 0 &&
+        cfg.apiBase.indexOf('GANTI_DENGAN') === -1) {
+      runtimeApiBase = cfg.apiBase;
+    } else {
+      runtimeApiBase = null;
+    }
+    return;
+  }
+  // [SELF-AUDIT 2026-09-16 / p.493] Kredensial perangkat dari halaman
+  // (kontrak GAS K-7; kini bersumber sessionStorage, bukan localStorage).
+  // Payload divalidasi bentuknya; null/invalid menghapus kredensial
   // lama (logout propagasi ke SW). Tidak dipersist ke cache/IndexedDB.
   if (event.data && typeof event.data === 'object' &&
       event.data.type === 'PLTS_PUSH_ALARM_DEVICE_CREDENTIALS') {
@@ -451,10 +496,12 @@ self.addEventListener('periodicsync', (event) => {
 
 async function refreshLatestData() {
   try {
-    const res = await fetch(API_BASE + '?action=snapshot', { credentials: 'omit' });
+    const apiBase = await getApiBase_();
+    if (!apiBase) return; // belum diprovision
+    const res = await fetch(apiBase + '?action=snapshot', { credentials: 'omit' });
     if (res.ok) {
       const cache = await caches.open(CACHE_DATA);
-      await cache.put(API_BASE + '?action=snapshot', res.clone());
+      await cache.put(apiBase + '?action=snapshot', res.clone());
     }
   } catch (e) { /* offline: abaikan */ }
 }
