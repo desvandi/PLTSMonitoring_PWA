@@ -31,6 +31,14 @@ export interface AlarmPushPayload {
   url?: string | null;
   timestamp?: number | string | null;
   requireInteraction?: boolean | null;
+  /**
+   * [AUDIT p.482 REMEDIATION 2026-09] Capability token ACK — HMAC-SHA256
+   * yang dihasilkan GAS PushService per-alarm dengan masa berlaku
+   * terbatas (bucket waktu). Token ini adalah SATU-SATUNYA otorisasi
+   * untuk aksi "Tandai Ditangani": siapa pun yang hanya mengetahui URL
+   * GAS + alarmId TIDAK lagi bisa mengirim ACK palsu.
+   */
+  ackToken?: string | null;
 }
 
 /** Deep-link target saat notifikasi alarm diklik (view Alarms aplikasi). */
@@ -165,6 +173,8 @@ export interface AlarmNotificationOptions {
     url: string;
     alarmId: string | null;
     ackUrl: string;
+    /** [p.482] Capability token ACK terikat alarm ini (null = payload lama). */
+    ackToken: string | null;
     severity: AlarmSeverity;
   };
   actions: Array<{ action: string; title: string }>;
@@ -208,6 +218,10 @@ export function buildAlarmNotificationOptions(
       url: ctx.targetUrl,
       alarmId,
       ackUrl: ctx.apiBase,
+      // [p.482] Capability token ikut menempel pada notifikasi — SW
+      // mengirimkannya saat ACK sehingga GAS dapat memverifikasi bahwa
+      // permintaan berasal dari notifikasi yang benar-benar diterbitkan.
+      ackToken: typeof payload?.ackToken === "string" && payload.ackToken.length > 0 ? payload.ackToken : null,
       severity,
     },
     actions: [

@@ -5,12 +5,15 @@
 //   canControlRelays = FALSE (fail-closed). "UNKNOWN" must NEVER be reported
 //   as a verified/compatible state.
 // Plus the compatibility matrix: telemetry gate vs relay gate.
+// [AUDIT p.477/p.478 REMEDIATION 2026-09] Malformed-version and
+// null-protocol/schema fail-closed regressions + cross-layer normalization.
 // =============================================================================
 import { describe, expect, it } from "vitest";
 
 import {
   evaluateCompatibility,
   unreachableCompatibilityStatus,
+  normalizeFirmwareInfo,
 } from "@/lib/compatibility";
 
 describe("evaluateCompatibility — fail-closed on unverified firmware (P0 PWA-02)", () => {
@@ -81,5 +84,123 @@ describe("compatibility matrix — telemetry gate vs relay gate", () => {
     expect(st.status).toBe("compatible");
     expect(st.canViewTelemetry).toBe(true);
     expect(st.canControlRelays).toBe(true);
+  });
+});
+
+// =============================================================================
+// [AUDIT p.477 REMEDIATION 2026-09] Malformed firmware version → fail-closed.
+// The old compareVersions() returned 0 ("equal") when parse failed, letting
+// garbage versions pass the range check and reach "compatible".
+// =============================================================================
+describe("p.477 — malformed firmware version fails closed", () => {
+  const malformed = ["not-a-version", "", "1.9.x", "abc.1.2", "9", "1..3", "@@@", "null"];
+
+  it.each(malformed)("malformed version %j → status unknown, BOTH gates blocked", (v) => {
+    const st = evaluateCompatibility(v, 1, 1);
+    expect(st.status).toBe("unknown");
+    expect(st.canViewTelemetry).toBe(false);
+    expect(st.canControlRelays).toBe(false);
+    expect(st.message).toMatch(/missing or malformed/i);
+  });
+
+  it("REGRESSION: malformed version can never reach a range comparison (was compared 'equal')", () => {
+    // A garbage version ABOVE the max boundary, or below the min, previously
+    // slipped through compareVersions() === 0; now it must be rejected
+    // outright as UNKNOWN before any comparison.
+    const st = evaluateCompatibility("999999.garbage", 1, 1);
+    expect(st.status).toBe("unknown");
+  });
+});
+
+// =============================================================================
+// [AUDIT p.478 REMEDIATION 2026-09] protocolVersion/configSchemaVersion null
+// means "contract NOT verified" — never "compatible".
+// =============================================================================
+describe("p.478 — null protocol/config schema is NOT compatible", () => {
+  it("null protocolVersion on a valid version → protocol_mismatch, BOTH gates blocked", () => {
+    const st = evaluateCompatibility("1.9.3", null, 1);
+    expect(st.status).toBe("protocol_mismatch");
+    expect(st.canViewTelemetry).toBe(false);
+    expect(st.canControlRelays).toBe(false);
+    expect(st.message).toMatch(/not reported/i);
+  });
+
+  it("null configSchemaVersion on a valid version → config_schema_mismatch, BOTH gates blocked", () => {
+    const st = evaluateCompatibility("1.9.3", 1, null);
+    expect(st.status).toBe("config_schema_mismatch");
+    expect(st.canViewTelemetry).toBe(false);
+    expect(st.canControlRelays).toBe(false);
+  });
+
+  it("undefined (missing fields) is treated exactly like null — fail-closed", () => {
+    const st = evaluateCompatibility("1.9.3", undefined, undefined);
+    expect(st.status).toBe("protocol_mismatch");
+    expect(st.canViewTelemetry).toBe(false);
+    expect(st.canControlRelays).toBe(false);
+  });
+
+  it("unparseable protocol value ('garbage') is also unverified → fail-closed", () => {
+    const st = evaluateCompatibility("1.9.3", "garbage", 1);
+    expect(st.status).toBe("protocol_mismatch");
+    expect(st.canViewTelemetry).toBe(false);
+    expect(st.canControlRelays).toBe(false);
+  });
+});
+
+// =============================================================================
+// [CROSS-LAYER CONTRACT] The ESP32 /api/version response (ArduinoJson) uses
+// the keys firmwareVersion/configVersion with STRING values; the PWA mock
+// uses currentVersion/configSchemaVersion with numbers. Both must evaluate.
+// =============================================================================
+describe("cross-layer — firmware string serialization + key mapping", () => {
+  it("string '1'/'1' (ArduinoJson) is coerced and accepted as compatible", () => {
+    const st = evaluateCompatibility("1.9.3", "1", "1");
+    expect(st.status).toBe("compatible");
+    expect(st.protocolVersion).toBe(1);
+    expect(st.configSchemaVersion).toBe(1);
+    expect(st.canViewTelemetry).toBe(true);
+    expect(st.canControlRelays).toBe(true);
+  });
+
+  it("string '2' protocol (future firmware) → protocol_mismatch", () => {
+    const st = evaluateCompatibility("1.9.3", "2", "1");
+    expect(st.status).toBe("protocol_mismatch");
+  });
+
+  it("normalizeFirmwareInfo maps the REAL device shape (firmwareVersion/configVersion, strings)", () => {
+    const info = normalizeFirmwareInfo({
+      firmwareVersion: "1.9.3",
+      protocolVersion: "1",
+      configVersion: "1",
+      calibrationVersion: "1",
+      buildDate: "2026-09-01",
+      buildProfile: "PRODUCTION",
+    });
+    expect(info.currentVersion).toBe("1.9.3");
+    expect(info.protocolVersion).toBe(1);
+    expect(info.configSchemaVersion).toBe(1);
+  });
+
+  it("normalizeFirmwareInfo keeps the MOCK shape (currentVersion/configSchemaVersion, numbers)", () => {
+    const info = normalizeFirmwareInfo({
+      currentVersion: "1.9.3",
+      protocolVersion: 1,
+      configSchemaVersion: 1,
+    });
+    expect(info.currentVersion).toBe("1.9.3");
+    expect(info.protocolVersion).toBe(1);
+    expect(info.configSchemaVersion).toBe(1);
+  });
+
+  it("normalizeFirmwareInfo fails closed on absent/garbage fields (empty version, null protocol)", () => {
+    const info = normalizeFirmwareInfo({ buildDate: "2026-09-01" });
+    expect(info.currentVersion).toBe("");
+    expect(info.protocolVersion).toBeNull();
+    expect(info.configSchemaVersion).toBeNull();
+    // And the gate treats that exactly as fail-closed:
+    const st = evaluateCompatibility(info.currentVersion || null, info.protocolVersion, info.configSchemaVersion);
+    expect(st.status).toBe("unknown");
+    expect(st.canViewTelemetry).toBe(false);
+    expect(st.canControlRelays).toBe(false);
   });
 });

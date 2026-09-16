@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSysConfig } from '@/components/providers/sys-config-provider';
+import { useAuth } from '@/components/providers/auth-provider';
 import { useFleetStatus } from '@/hooks/useFleetStatus';
 import { useLanguage } from '@/components/providers/language-provider';
 import { useToast } from '@/hooks/use-toast';
@@ -104,9 +105,22 @@ export function EmergencyControlView() {
   }, [device]);
 
   // --- Commands ---
+  // [p.485b REMEDIATION 2026-09] Command-layer role check (defense-in-depth):
+  // the view itself is operator-only (OperatorViewGuard + OPERATOR_ONLY_VIEWS),
+  // but runCommand independently refuses to build an emergency payload for a
+  // viewer-scoped session — UI gating alone is not an authorization boundary.
+  const { session } = useAuth();
   const runCommand = useCallback(
     async (command: "ARM" | "DISARM" | "CONFIG", opts?: { note?: string; config?: EmergencyConfig }) => {
       if (!device) return;
+      if (session.role === 'viewer') {
+        toast({
+          title: t('emergency.cmd_failed'),
+          description:
+            'Emergency commands require an operator session — this session is viewer-scoped (read-only).',
+        });
+        return;
+      }
       setSending(command);
       const res = await sendEmergencyCommand(device, command, opts);
       setSending(null);
@@ -129,7 +143,7 @@ export function EmergencyControlView() {
         }, 16000);
       }
     },
-    [device, toast, t, refresh, loadEvents],
+    [device, session.role, toast, t, refresh, loadEvents],
   );
 
   if (!device) {

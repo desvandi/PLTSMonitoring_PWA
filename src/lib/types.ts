@@ -536,11 +536,15 @@ export type SystemConfig = {
 };
 
 // ---------- FIRMWARE / VERSION ----------
+// [p.477/p.478 cross-layer] protocolVersion / configSchemaVersion are NULLABLE:
+// a device that does not report them leaves the contract UNVERIFIED, which the
+// compatibility gate must treat as fail-closed — never as an implicit match.
+// (The ESP32 also serializes both as strings — normalizeFirmwareInfo() coerces.)
 export type FirmwareInfo = {
   currentVersion: string;
   buildDate: string;
-  protocolVersion: number;
-  configSchemaVersion: number;
+  protocolVersion: number | null;
+  configSchemaVersion: number | null;
   latestAvailable: string | null;
   updateAvailable: boolean | null;
   signatureVerified: boolean | null;

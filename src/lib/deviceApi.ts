@@ -28,8 +28,14 @@ import type {
   RelayCommandResult,
   RelayChannelId,
 } from "@/lib/types";
-import { getCompatibilitySnapshot, IncompatibleFirmwareError } from "./compatibility";
+import { getCompatibilitySnapshot, IncompatibleFirmwareError, normalizeFirmwareInfo } from "./compatibility";
 import { API_BASE_URL, ApiError, getCsrfToken, generateRequestId, buildCommandEnvelope } from "./apiShared";
+
+// Demo mode may exercise the mock OTA route without release metadata; every
+// REAL device (development build included) enforces X-Expected-SHA256 and
+// X-Firmware-Version at UPLOAD_FILE_START, so a metadata-less upload can only
+// ever be a demo/mock operation — never a production device operation.
+const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
 
 export interface DeviceApiClient {
   // ---------- Status & version ----------
@@ -65,12 +71,11 @@ export interface DeviceApiClient {
   insights: () => Promise<InsightsEnvelope>;
 
   // ---------- OTA — directly to ESP32 ----------
-  // meta is REQUIRED in PRODUCTION_BUILD: the device's OtaHandlers.cpp enforces
-  // X-Expected-SHA256, X-Signature, X-Firmware-Version headers at UPLOAD_FILE_START.
-  // Without these headers, production devices reject the upload with HTTP 500.
-  // The meta object carries the Ed25519 signature (hex), SHA-256 (hex), and
-  // firmware version string that the device uses to verify the binary before
-  // flashing.
+  // [p.486 REMEDIATION] meta is REQUIRED for any upload targeting a real
+  // device (mock/demo excluded). The device's OtaHandlers.cpp enforces
+  // X-Expected-SHA256, X-Signature (production), X-Firmware-Version headers at
+  // UPLOAD_FILE_START — a metadata-less upload is GUARANTEED to be rejected,
+  // so this layer now fails closed BEFORE any bytes leave the browser.
   otaUpload: (
     file: File | Blob,
     onProgress?: (pct: number) => void,
@@ -187,42 +192,84 @@ function assertRelayCommandAllowed(): void {
   }
 }
 
+/**
+ * [AUDIT p.488 REMEDIATION 2026-09] Generic fail-closed mutation guard.
+ *
+ * Previously only relay commands enforced "never verified → BLOCKED";
+ * updateConfig/updateCalibration/voltageCalibrationPoint/acs712ZeroCal used
+ * the fail-open pattern `if (compat && !compat.canViewTelemetry)`, so a NULL
+ * snapshot (compatibility initialization pending or failed) let config and
+ * calibration mutations through to the ESP32. reboot / factory-reset /
+ * changePassword / importConfig / OTA had NO guard at all.
+ *
+ * Now EVERY firmware mutation must pass this guard before deviceRequest():
+ *   - compatibility snapshot missing  → BLOCKED (never verified)
+ *   - canViewTelemetry === false       → BLOCKED (contract incompatible)
+ *
+ * `canViewTelemetry` is the schema-contract gate: a firmware whose
+ * config/calibration schema is incompatible must never receive mutations
+ * shaped by this PWA's schema. Relay commands additionally require
+ * `canControlRelays` via assertRelayCommandAllowed().
+ */
+function assertMutationAllowed(operation: string): void {
+  const compat = getCompatibilitySnapshot();
+  if (!compat) {
+    throw new IncompatibleFirmwareError(
+      `${operation} BLOCKED (fail-closed): firmware compatibility has not been ` +
+        "verified yet. Wait for the /api/version check to complete, then retry.",
+    );
+  }
+  if (!compat.canViewTelemetry) {
+    throw new IncompatibleFirmwareError(
+      `${operation} BLOCKED: ${compat.message}`,
+    );
+  }
+}
+
 export const deviceApi: DeviceApiClient = {
   status:      () => deviceRequest<SystemStatus>("/api/status"),
-  version:     () => deviceRequest<FirmwareInfo>("/api/version"),
+  // [CROSS-LAYER CONTRACT] The real ESP32 /api/version response uses the keys
+  // `firmwareVersion` / `configVersion` and STRING values (ArduinoJson), while
+  // the mock uses `currentVersion` / `configSchemaVersion` with numbers.
+  // normalizeFirmwareInfo() maps BOTH shapes so the compatibility gate
+  // evaluates the actual firmware contract (audit: "PWA production belum
+  // mengikuti firmware HEAD terbaru").
+  version: async () => {
+    const raw = await deviceRequest<Record<string, unknown>>("/api/version");
+    return normalizeFirmwareInfo(raw);
+  },
   diagnostics: () => deviceRequest<Diagnostics>("/api/diagnostics"),
 
   config:      () => deviceRequest<SystemConfig>("/api/config"),
   calibration: () => deviceRequest<Calibration>("/api/calibration"),
 
-  updateConfig: (cfg) => {
-    const compat = getCompatibilitySnapshot();
-    if (compat && !compat.canViewTelemetry) throw new IncompatibleFirmwareError(compat.message);
+  // [p.488] All mutations below are `async` so a guard throw surfaces as a
+  // REJECTED promise (safe for every caller style) and pass through
+  // assertMutationAllowed() BEFORE deviceRequest().
+  updateConfig: async (cfg) => {
+    assertMutationAllowed("Config update");
     return deviceRequest<{ updated: boolean }>("/api/config", {
       method: "POST",
       // [PRODUCTION-GRADE 2026-09 / CORE-02] Full command envelope
       body: { ...cfg, ...buildCommandEnvelope() },
     });
   },
-  updateCalibration: (cal) => {
-    const compat = getCompatibilitySnapshot();
-    if (compat && !compat.canViewTelemetry) throw new IncompatibleFirmwareError(compat.message);
+  updateCalibration: async (cal) => {
+    assertMutationAllowed("Calibration update");
     return deviceRequest<{ updated: boolean }>("/api/calibration", {
       method: "POST",
       body: { ...cal, ...buildCommandEnvelope() },
     });
   },
-  voltageCalibrationPoint: (point, reference, raw) => {
-    const compat = getCompatibilitySnapshot();
-    if (compat && !compat.canViewTelemetry) throw new IncompatibleFirmwareError(compat.message);
+  voltageCalibrationPoint: async (point, reference, raw) => {
+    assertMutationAllowed("Voltage calibration point");
     return deviceRequest<{ updated: boolean }>(`/api/calibration/voltage/point/${point}`, {
       method: "POST",
       body: { reference, raw, ...buildCommandEnvelope() },
     });
   },
-  acs712ZeroCal: () => {
-    const compat = getCompatibilitySnapshot();
-    if (compat && !compat.canViewTelemetry) throw new IncompatibleFirmwareError(compat.message);
+  acs712ZeroCal: async () => {
+    assertMutationAllowed("ACS712 zero calibration");
     return deviceRequest<{ updated: boolean; newOffset: number }>(
       "/api/calibration/acs712/zero",
       { method: "POST", body: { ...buildCommandEnvelope() } },
@@ -242,14 +289,16 @@ export const deviceApi: DeviceApiClient = {
   // [audit-2 S-5 FIX] URL-encode alarmId to prevent path injection if the
   // firmware ever emits an alarm code with `/`, `?`, `#`, or unicode chars.
   alarms: () => deviceRequest<{ active: Alarm[]; history: Alarm[] }>("/api/alarms"),
-  acknowledgeAlarm: (alarmId: string) =>
-    deviceRequest<{ acknowledged: boolean }>(
+  acknowledgeAlarm: async (alarmId: string) => {
+    assertMutationAllowed("Alarm acknowledge");
+    return deviceRequest<{ acknowledged: boolean }>(
       `/api/alarms/${encodeURIComponent(alarmId)}/acknowledge`,
       {
         method: "POST",
         body: { ...buildCommandEnvelope() },
       },
-    ),
+    );
+  },
 
   events: (filter) => {
     const params = new URLSearchParams();
@@ -266,8 +315,28 @@ export const deviceApi: DeviceApiClient = {
   // [Audit 2026-09-04] Fix PWA→firmware contract gap: send X-Expected-SHA256,
   // X-Signature, X-Firmware-Version headers. PRODUCTION_BUILD devices reject
   // uploads without these headers (OtaHandlers.cpp UPLOAD_FILE_START gate).
+  // [p.486 REMEDIATION 2026-09] TWO security standards are no longer allowed:
+  // the manual raw-.bin upload path must carry the SAME identity/signature
+  // metadata as the canonical release path. A metadata-less upload is now
+  // rejected client-side (fail-closed) unless demo mode explicitly targets
+  // the mock route.
   otaUpload: (file, onProgress, meta) =>
     new Promise<{ success: boolean; newVersion?: string }>((resolve, reject) => {
+      try {
+        assertMutationAllowed("OTA upload");
+        if (!meta && !DEMO_MODE) {
+          throw new ApiError(
+            "OTA upload BLOCKED (fail-closed): firmware requires the security " +
+              "metadata headers X-Expected-SHA256, X-Signature, X-Firmware-Version. " +
+              "Use the canonical release flow, or supply the release manifest's " +
+              "SHA-256, Ed25519 signature, and version for a manual upload.",
+            0,
+          );
+        }
+      } catch (err) {
+        reject(err instanceof Error ? err : new ApiError(String(err), 0));
+        return;
+      }
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${API_BASE_URL}/api/ota`);
       xhr.withCredentials = true;
@@ -302,45 +371,58 @@ export const deviceApi: DeviceApiClient = {
       xhr.send(fd);
     }),
 
-  reboot: () => deviceRequest<{ rebooting: boolean }>("/api/reboot", { method: "POST" }),
-  factoryResetPrepare: () =>
-    deviceRequest<{ token: string; expiresAt: number }>("/api/factory_reset/prepare", {
+  reboot: async () => {
+    assertMutationAllowed("Reboot");
+    return deviceRequest<{ rebooting: boolean }>("/api/reboot", { method: "POST" });
+  },
+  factoryResetPrepare: async () => {
+    assertMutationAllowed("Factory reset prepare");
+    return deviceRequest<{ token: string; expiresAt: number }>("/api/factory_reset/prepare", {
       method: "POST",
-    }),
-  factoryResetConfirm: (token) =>
-    deviceRequest<{ reset: boolean }>("/api/factory_reset/confirm", {
+    });
+  },
+  factoryResetConfirm: async (token: string) => {
+    assertMutationAllowed("Factory reset confirm");
+    return deviceRequest<{ reset: boolean }>("/api/factory_reset/confirm", {
       method: "POST",
       body: { token, confirm: "RESET" },
-    }),
+    });
+  },
 
   // [PARITY-4 2026-09-06] Transaction identity parity (audit P1): device
   // config mutations now carry requestId on EVERY path — the firmware
   // handleDevicePost already ran the canonical pipeline (journal + dedup),
   // but a body without requestId skipped it entirely.
-  updateDevice: (opts) =>
-    deviceRequest<{ updated: boolean }>("/api/config/device", {
+  updateDevice: async (opts) => {
+    assertMutationAllowed("Device config update");
+    return deviceRequest<{ updated: boolean }>("/api/config/device", {
       method: "POST",
       body: { ...opts, ...buildCommandEnvelope() },
-    }),
-  changePassword: (current, next) =>
-    deviceRequest<{ changed: boolean }>("/api/config/password", {
+    });
+  },
+  changePassword: async (current: string, next: string) => {
+    assertMutationAllowed("Password change");
+    return deviceRequest<{ changed: boolean }>("/api/config/password", {
       method: "POST",
       // [PARITY-4] the firmware joins password changes to the canonical
       // config.password command path (journal + dedup).
       body: { current, next, ...buildCommandEnvelope() },
-    }),
+    });
+  },
   exportConfig: () => deviceRequest<{ config: SystemConfig }>("/api/config/export"),
   // [PARITY-4] Config import: requestId rides the X-Request-Id HEADER. The
   // body is the exported CRC32-verified backup — injecting a key would
   // break the device's Utils::verifyCRC. The firmware journals the
   // transaction with sha256(raw-body) as the command hash: same bytes +
   // same id = replayed ACK; different bytes + same id = 409 CONFLICT.
-  importConfig: (cfg) =>
-    deviceRequest<{ imported: boolean }>("/api/config/import", {
+  importConfig: async (cfg: SystemConfig) => {
+    assertMutationAllowed("Config import");
+    return deviceRequest<{ imported: boolean }>("/api/config/import", {
       method: "POST",
       body: cfg,
       headers: { "X-Request-Id": generateRequestId() },
-    }),
+    });
+  },
 
   // ---------- 8-Channel Relay (v1.8.0) ----------
   // [Brief §6] All relay mutations use IDEMPOTENT_STATE (on/off), NOT toggle.

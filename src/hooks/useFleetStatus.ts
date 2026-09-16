@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { DeviceProfile } from '@/lib/sysConfig';
 import { useSysConfig } from '@/components/providers/sys-config-provider';
 import { parseLatestEnvelope, type FleetTelemetry } from '@/lib/gasEnvelope';
+import { gasFetch } from '@/lib/gasFetch';
 
 export type { FleetTelemetry } from '@/lib/gasEnvelope';
 export { parseLatestEnvelope } from '@/lib/gasEnvelope';
@@ -27,26 +28,18 @@ async function fetchLatestFor(device: DeviceProfile): Promise<{
   telemetry: FleetTelemetry | null;
   error: string | null;
 }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FLEET_TIMEOUT_MS);
   const startedAt = performance.now();
   try {
-    const res = await fetch(device.gas_webapp_url, {
-      method: 'POST',
-      // [AUDIT 2026-08-28 F11] device_key MUST be in the body: GAS resolves the
-      // device from body.device_key (token auth has no device identity), and
-      // without it LATEST silently queried the Config-sheet DEFAULT device —
-      // a fleet of N devices would all show the same (or no) telemetry.
+    // [p.488 REMEDIATION] Hardened transport — allowlist + redirect: 'error'
+    // (the auth_token rides this body; it must never follow a redirect).
+    const res = await gasFetch(device.gas_webapp_url, {
       body: JSON.stringify({
         action: 'LATEST',
         token: device.auth_token,
         device_key: device.device_id,
       }),
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      signal: controller.signal,
-      redirect: 'follow',
+      timeoutMs: FLEET_TIMEOUT_MS,
     });
-    clearTimeout(timer);
     const latency = Math.round(performance.now() - startedAt);
     if (!res.ok) return { ok: false, latency_ms: latency, telemetry: null, error: `HTTP ${res.status}` };
     const json = (await res.json().catch(() => null)) as {
@@ -64,7 +57,6 @@ async function fetchLatestFor(device: DeviceProfile): Promise<{
       error: null,
     };
   } catch (err) {
-    clearTimeout(timer);
     const latency = Math.round(performance.now() - startedAt);
     return {
       ok: false,

@@ -13,6 +13,7 @@ import { api, setCsrfToken } from '@/lib/api';
 import type { SessionInfo } from '@/lib/types';
 import { useMqtt } from '@/components/providers/mqtt-provider';
 import { useSysConfig } from '@/components/providers/sys-config-provider';
+import { pingGasEndpoint } from '@/lib/sysConfig';
 
 // [AUDIT 2026-08-28 F9 — GAS cloud session]
 // In the documented zero-touch deployment (PWA on Vercel, no env vars, no
@@ -103,9 +104,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
         }
       } else if (config && !LAN_LOGIN_AVAILABLE) {
-        // [F9] No REST session, no MQTT — but the operator HAS a validated
-        // GAS profile in PLTS_SYS_CONFIG → viewer session for GAS mode.
-        setRestSession(GAS_CLOUD_SESSION);
+        // [p.490-old REMEDIATION 2026-09] "Memiliki config yang bentuknya
+        // valid" ≠ "sudah terautentikasi ke GAS". The GAS viewer session is
+        // granted ONLY after a successful runtime PING handshake (token
+        // verified by GAS) — config presence alone is NOT authentication.
+        // On PING failure the user stays unauthenticated with an honest
+        // error surfaced via the session refresh cycle.
+        const ping = await pingGasEndpoint(
+          config.gas_webapp_url,
+          config.auth_token,
+          7000,
+          config.device_id,
+        );
+        setRestSession(ping.ok ? GAS_CLOUD_SESSION : DEFAULT_SESSION);
       } else {
         setRestSession(DEFAULT_SESSION);
       }
@@ -114,7 +125,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // operator's locally-stored GAS profile (GAS data flows browser → GAS
       // directly) — the viewer session stands; REST operator scope is never
       // granted on error (fail-closed against privilege escalation).
-      setRestSession(config && !LAN_LOGIN_AVAILABLE ? GAS_CLOUD_SESSION : DEFAULT_SESSION);
+      // [p.490-old] Same rule on the error path: a GAS viewer session requires
+      // a reachable, token-verifying backend (the config remains on disk for
+      // the next refresh — the user is NOT auto-authenticated).
+      setRestSession(DEFAULT_SESSION);
     } finally {
       setRestLoading(false);
     }
@@ -152,23 +166,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(async () => {
+    // [p.485a REMEDIATION 2026-09] Logout is a SESSION TERMINATION event for
+    // EVERY transport the operator authenticated with — not just the active
+    // one. Previously the MQTT-connected branch returned early WITHOUT
+    // calling api.logout(): the HttpOnly JWT cookie survived (up to the 1 h
+    // TTL) and a refresh → /api/session restored the operator session
+    // (REST login → MQTT connect → logout → JWT masih hidup).
+    //
+    // New contract: when an operator REST session exists (restSession
+    // authenticated), logout ALWAYS revokes it server-side — even if MQTT is
+    // currently connected — plus clears the CSRF cache. The GAS/MQTT viewer
+    // fallbacks then apply as before.
+    const hadRestSession = restSession.isAuthenticated;
     if (mqttConnected) {
       mqttDisconnect();
-      // Setelah broker terputus, derived session jatuh ke restSession —
-      // kembalikan ke profil GAS (viewer) bila zero-touch, bukan sesi admin.
-      setRestSession(config && !LAN_LOGIN_AVAILABLE ? GAS_CLOUD_SESSION : DEFAULT_SESSION);
-      return;
     }
-    try {
-      await api.logout();
-    } catch {
-      // ignore
+    if (hadRestSession) {
+      try {
+        await api.logout();
+      } catch {
+        // Network failure must not block local session teardown — the server
+        // session expires within SESSION_TTL (≤1 h) and the revocation list
+        // catches it on the next login cycle. CSRF cache is cleared below.
+      }
     }
     setCsrfToken(null);
     // [F9] Logging out of REST does not erase the local GAS profile — the
     // operator returns to the (viewer-scoped) GAS session, mirroring MQTT.
     setRestSession(config && !LAN_LOGIN_AVAILABLE ? GAS_CLOUD_SESSION : DEFAULT_SESSION);
-  }, [mqttConnected, mqttDisconnect, config]);
+  }, [mqttConnected, mqttDisconnect, config, restSession.isAuthenticated]);
 
   return (
     <AuthContext.Provider

@@ -11,6 +11,11 @@
 //
 // PURE module (no React, no DOM) so vitest can cover it in node environment.
 // =============================================================================
+// [p.488 REMEDIATION 2026-09] All GAS transports use gasFetch(): strict
+// origin allowlist + redirect: 'error' — token-bearing bodies never follow
+// cross-origin redirects.
+// =============================================================================
+import { gasFetch } from './gasFetch';
 
 export interface FleetTelemetry {
   v_bat: number | null;
@@ -205,15 +210,12 @@ export async function fetchGasDailyReport(
   days: number,
   timeoutMs = 15000,
 ): Promise<DailyEnergyRecord[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // [p.488 REMEDIATION] Hardened transport: strict GAS allowlist +
+  // redirect: 'error' (token rides the body — it must never be redirected).
   try {
-    const res = await fetch(gasUrl, {
-      method: "POST",
+    const res = await gasFetch(gasUrl, {
       body: JSON.stringify({ action: "DAILY", token, device_key: deviceKey, days }),
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      signal: controller.signal,
-      redirect: "follow",
+      timeoutMs,
     });
     if (!res.ok) throw new Error(`GAS DAILY: HTTP ${res.status}`);
     const json = (await res.json().catch(() => null)) as
@@ -225,8 +227,11 @@ export async function fetchGasDailyReport(
     const records = mapGasDailyDays(json.data.days);
     if (!records.length) throw new Error("GAS DAILY: no aggregated days returned");
     return records;
-  } finally {
-    clearTimeout(timer);
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(`GAS DAILY: timeout > ${timeoutMs}ms`);
+    }
+    throw err;
   }
 }
 
@@ -272,20 +277,20 @@ export async function fetchGasInsights(
   deviceKey: string,
   timeoutMs = 20000,
 ): Promise<InsightsEnvelope> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // [p.488 REMEDIATION] Hardened transport: strict GAS allowlist +
+  // redirect: 'error' (token rides the body — it must never be redirected).
   try {
-    const res = await fetch(gasUrl, {
-      method: "POST",
+    const res = await gasFetch(gasUrl, {
       body: JSON.stringify({ action: "INSIGHTS", token, device_key: deviceKey }),
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      signal: controller.signal,
-      redirect: "follow",
+      timeoutMs,
     });
     if (!res.ok) throw new Error(`GAS INSIGHTS: HTTP ${res.status}`);
     const json = await res.json().catch(() => null);
     return parseGasInsightsEnvelope(json);
-  } finally {
-    clearTimeout(timer);
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(`GAS INSIGHTS: timeout > ${timeoutMs}ms`);
+    }
+    throw err;
   }
 }

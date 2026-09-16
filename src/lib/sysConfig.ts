@@ -2,11 +2,18 @@
  * PLTS_SYS_CONFIG — Runtime dynamic configuration stored in browser localStorage.
  *
  * Contract enforced by §2.3 of the technical brief (Zero-Touch Deployment).
- * The PWA is deployed once; each user pastes their own GAS URL + token, which
- * is persisted in localStorage under the key `PLTS_SYS_CONFIG`.
+ * The PWA is deployed once; each user pastes their own GAS URL + token.
+ *
+ * [AUDIT p.483 REMEDIATION 2026-09] The config blob in localStorage is now
+ * TOKEN-FREE: `auth_token` (viewer credential) and `admin_token` (operator
+ * secret) live in sessionStorage (see lib/authTokenSession.ts and
+ * lib/adminTokenSession.ts). Legacy payloads that still carry either token
+ * are migrated on read and re-written clean. The in-memory config resolves
+ * tokens from the session stores, so consumers keep reading
+ * `device.auth_token` unchanged.
  *
  * v2.0.0 — Multi-Device support (2026-02-22)
- * The config now stores an array of `devices` plus an `active_device_id`.
+ * The config stores an array of `devices` plus an `active_device_id`.
  * Legacy v1.0.0 payloads (single device) are auto-migrated on read.
  * The top-level `gas_webapp_url`, `auth_token`, `device_id` fields continue to
  * MIRROR the active device so existing components keep working unchanged.
@@ -16,6 +23,10 @@ export const SYS_CONFIG_VERSION = '2.0.0';
 
 /** [P1-3 REMEDIATION 2026-09] sessionStorage-backed admin-token store. */
 import { setAdminToken } from './adminTokenSession';
+/** [p.483 REMEDIATION 2026-09] sessionStorage-backed auth-token store. */
+import { setAuthToken, getAuthToken, resolveAuthToken } from './authTokenSession';
+/** [p.488 REMEDIATION 2026-09] Strict GAS origin allowlist + redirect:error. */
+import { assertGasUrlAllowed, gasFetch } from './gasFetch';
 
 export interface DashboardSettings {
   telemetry_refresh_interval_sec: number;
@@ -105,20 +116,27 @@ function parseDeviceProfile(raw: unknown): DeviceProfile | null {
   if (!raw || typeof raw !== 'object') return null;
   const obj = raw as Record<string, unknown>;
   if (!isNonEmptyString(obj.device_id)) return null;
-  // [audit-2 S-1 FIX] Require HTTPS (or localhost in dev). The previous
-  // check `startsWith('http')` matched `http://` (plaintext), `httpsomehost`,
-  // etc. Sending admin_token over HTTP leaks it to MITM.
+  // [audit-2 S-1 FIX + p.488 REMEDIATION] Full URL parsing against the STRICT
+  // GAS allowlist (script.google.com / script.googleusercontent.com / env
+  // extras; localhost dev outside production). The previous prefix check
+  // (`startsWith('https://')`) accepted ANY https host — sending credentials
+  // to an arbitrary endpoint if the config was influenced.
   if (!isNonEmptyString(obj.gas_webapp_url)) return null;
-  const gasUrl = obj.gas_webapp_url.toString();
-  const isHttps = gasUrl.startsWith('https://');
-  const isLocalDev = gasUrl.startsWith('http://localhost') || gasUrl.startsWith('http://127.0.0.1');
-  if (!isHttps && !(isLocalDev && process.env.NODE_ENV !== 'production')) return null;
-  if (!isNonEmptyString(obj.auth_token)) return null;
+  const gasCheck = assertGasUrlAllowed(obj.gas_webapp_url.toString());
+  if (!gasCheck.ok) return null;
+  // [p.483 REMEDIATION] auth_token resolves from the SESSION-scoped store
+  // first; the profile field remains only as a deprecated in-memory carrier
+  // for legacy blobs (migrated + stripped on read — see readSysConfig).
+  // An EMPTY token is valid here: the profile stays usable for URL/settings,
+  // and every GAS request fails honestly (fail-closed) until the operator
+  // re-enters the token for this session.
+  const sessionToken = typeof obj.device_id === 'string' ? getAuthToken(obj.device_id) : undefined;
+  const legacyToken = isNonEmptyString(obj.auth_token) ? (obj.auth_token as string).trim() : '';
   return {
     device_id: obj.device_id as string,
     label: isNonEmptyString(obj.label) ? (obj.label as string) : (obj.device_id as string),
-    gas_webapp_url: obj.gas_webapp_url as string,
-    auth_token: obj.auth_token as string,
+    gas_webapp_url: gasCheck.url.toString(),
+    auth_token: sessionToken ?? legacyToken,
     admin_token: isNonEmptyString(obj.admin_token) ? (obj.admin_token as string) : undefined,
     firmware_type: isNonEmptyString(obj.firmware_type)
       ? (obj.firmware_type as string).toLowerCase()
@@ -160,6 +178,25 @@ export function validateSysConfig(raw: unknown): PltsSysConfig | null {
   };
 }
 
+/** In-memory view: auth_token resolves from the session store; admin_token
+ * stays STRIPPED in memory too (senders resolve it at send-time via
+ * resolveAdminToken — the token never rides a config object). */
+function withResolvedTokens(config: PltsSysConfig): PltsSysConfig {
+  const devices = config.devices.map((d) => ({
+    ...d,
+    auth_token: resolveAuthToken(d),
+    admin_token: undefined,
+  }));
+  const active = devices.find((d) => d.device_id === config.active_device_id) ?? devices[0];
+  return { ...config, devices, auth_token: active.auth_token, gas_webapp_url: active.gas_webapp_url };
+}
+
+/** Token-free disk shape — what actually gets written to localStorage. */
+function toDiskShape(config: PltsSysConfig): PltsSysConfig {
+  const devices = config.devices.map((d) => ({ ...d, auth_token: '', admin_token: undefined }));
+  return { ...config, devices, auth_token: '' };
+}
+
 export function readSysConfig(): PltsSysConfig | null {
   if (!isBrowser()) return null;
   try {
@@ -168,39 +205,33 @@ export function readSysConfig(): PltsSysConfig | null {
     const parsed = JSON.parse(raw) as unknown;
     const validated = validateSysConfig(parsed);
     if (!validated) return null;
-    // [P1-3 REMEDIATION 2026-09] LEGACY MIGRATION — a payload that still
-    // carries admin_token (pre-hardening) is moved into the session-scoped
-    // store and re-persisted CLEAN, so the disk blob stops leaking the
-    // operator secret. Runs at most once per payload (the write-back below
-    // removes the trigger).
+    // [P1-3 + p.483 REMEDIATION 2026-09] LEGACY MIGRATION — a payload that
+    // still carries admin_token / auth_token on disk is moved into the
+    // session-scoped stores and re-persisted CLEAN, so the disk blob stops
+    // leaking credentials. Runs at most once per payload (the write-back
+    // below removes the trigger).
     let carriedTokens = false;
     for (const d of validated.devices) {
       if (d.admin_token && d.admin_token.trim().length > 0) {
         setAdminToken(d.device_id, d.admin_token);
         carriedTokens = true;
       }
+      if (typeof d.auth_token === 'string' && d.auth_token.trim().length > 0) {
+        setAuthToken(d.device_id, d.auth_token);
+        carriedTokens = true;
+      }
     }
-    if (carriedTokens) {
-      const stripped = validated.devices.map((d) => ({ ...d, admin_token: undefined }));
-      const clean: PltsSysConfig = { ...validated, devices: stripped };
+    // Persist migrated payload back to disk so legacy blobs get upgraded in
+    // place — no repeat migration on every read.
+    const originalVersion = (parsed as { version?: string })?.version;
+    if (carriedTokens || originalVersion !== SYS_CONFIG_VERSION) {
       try {
-        window.localStorage.setItem(SYS_CONFIG_KEY, JSON.stringify(clean));
+        window.localStorage.setItem(SYS_CONFIG_KEY, JSON.stringify(toDiskShape(validated)));
       } catch {
         /* quota errors — the session-store migration already happened */
       }
-      return clean;
     }
-    // Persist migrated payload back to disk so v1 legacy blobs get upgraded
-    // to v2 in place — no repeat migration on every read.
-    const originalVersion = (parsed as { version?: string })?.version;
-    if (originalVersion !== SYS_CONFIG_VERSION) {
-      try {
-        window.localStorage.setItem(SYS_CONFIG_KEY, JSON.stringify(validated));
-      } catch {
-        /* ignore quota errors — in-memory config is still valid */
-      }
-    }
-    return validated;
+    return withResolvedTokens(validated);
   } catch {
     return null;
   }
@@ -208,31 +239,45 @@ export function readSysConfig(): PltsSysConfig | null {
 
 /** Persist a fully-formed config. Prefer the higher-level helpers below.
  *
- * [P1-3 REMEDIATION 2026-09] DeviceProfile.admin_token is NEVER written to
- * localStorage — the operator secret moved to the session-scoped store
- * (see lib/adminTokenSession.ts). Any value still riding on a profile at
- * persist time is migrated to the session store, then stripped here.
+ * [P1-3 + p.483 REMEDIATION 2026-09] DeviceProfile.admin_token AND
+ * DeviceProfile.auth_token are NEVER written to localStorage — credentials
+ * moved to the session-scoped stores (lib/adminTokenSession.ts,
+ * lib/authTokenSession.ts). Values still riding on a profile at persist
+ * time are migrated to the session stores, then stripped from the disk
+ * blob. The RETURNED config carries session-resolved tokens so same-session
+ * consumers (e.g. the setup wizard's immediate PING) keep working.
  */
 export function persistSysConfig(config: Omit<PltsSysConfig, 'version' | 'updated_at'>): PltsSysConfig {
-  // Migrate + strip: tokens ride the session store, not the disk blob.
-  const devices = config.devices.map((d) => {
+  // Migrate + strip: tokens ride the session stores, not the disk blob.
+  const stripped = config.devices.map((d) => {
     if (d.admin_token && d.admin_token.trim().length > 0) {
       setAdminToken(d.device_id, d.admin_token);
     }
-    return { ...d, admin_token: undefined };
+    if (typeof d.auth_token === 'string' && d.auth_token.trim().length > 0) {
+      setAuthToken(d.device_id, d.auth_token);
+    }
+    return { ...d, admin_token: undefined as string | undefined, auth_token: '' };
   });
-  const active = devices.find((d) => d.device_id === config.active_device_id) ?? devices[0];
+  const activeStripped = stripped.find((d) => d.device_id === config.active_device_id) ?? stripped[0];
   const enriched: PltsSysConfig = {
     ...config,
-    devices,
-    gas_webapp_url: active.gas_webapp_url,
-    auth_token: active.auth_token,
-    device_id: active.device_id,
+    devices: stripped.map((d) => ({
+      ...d,
+      // auth_token resolves from the session store (same-session consumers
+      // like the setup wizard's immediate PING need it); admin_token stays
+      // stripped everywhere — senders resolve it at send-time.
+      auth_token: resolveAuthToken(d),
+      admin_token: undefined,
+    })),
+    gas_webapp_url: activeStripped.gas_webapp_url,
+    auth_token: resolveAuthToken(activeStripped),
+    device_id: activeStripped.device_id,
     version: SYS_CONFIG_VERSION,
     updated_at: new Date().toISOString(),
   };
   if (isBrowser()) {
-    window.localStorage.setItem(SYS_CONFIG_KEY, JSON.stringify(enriched));
+    // DISK SHAPE — token-free (auth_token mirrored as '' on every device).
+    window.localStorage.setItem(SYS_CONFIG_KEY, JSON.stringify(toDiskShape(enriched)));
     window.dispatchEvent(new CustomEvent('plts:config-updated'));
   }
   return enriched;
@@ -394,21 +439,18 @@ export async function pingGasEndpoint(
   timeoutMs = 7000,
   deviceKey?: string
 ): Promise<HandshakeResult> {
-  if (!gasUrl || !gasUrl.startsWith('http')) {
-    return { ok: false, message: 'URL GAS tidak valid (harus diawali http/https).' };
-  }
-  // [audit-2 S-1] Enforce HTTPS in production — admin_token is sent in body.
-  const isHttps = gasUrl.startsWith('https://');
-  const isLocalDev = gasUrl.startsWith('http://localhost') || gasUrl.startsWith('http://127.0.0.1');
-  if (!isHttps && !(isLocalDev && process.env.NODE_ENV !== 'production')) {
-    return { ok: false, message: 'URL GAS harus HTTPS di produksi (token dikirim via body).' };
+  // [audit-2 S-1 + p.488 REMEDIATION] Strict allowlist + HTTPS enforcement
+  // now live in gasFetch (full URL parse, script.google.com hosts only,
+  // redirect: 'error' — a PING carrying the auth token NEVER follows
+  // cross-origin redirects).
+  const check = assertGasUrlAllowed(gasUrl);
+  if (!check.ok) {
+    return { ok: false, message: check.message };
   }
   if (!token) {
     return { ok: false, message: 'Auth token tidak boleh kosong.' };
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = performance.now();
 
   try {
@@ -417,14 +459,7 @@ export async function pingGasEndpoint(
     // data.device_registered (older deployments ignore the extra field).
     const pingBody: Record<string, string> = { action: 'PING', token };
     if (deviceKey && deviceKey.trim()) pingBody.device_key = deviceKey.trim();
-    const response = await fetch(gasUrl, {
-      method: 'POST',
-      body: JSON.stringify(pingBody),
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      signal: controller.signal,
-      redirect: 'follow',
-    });
-    clearTimeout(timer);
+    const response = await gasFetch(gasUrl, { body: JSON.stringify(pingBody), timeoutMs });
     const latency = Math.round(performance.now() - startedAt);
 
     if (!response.ok) {
@@ -473,12 +508,13 @@ export async function pingGasEndpoint(
         : (payload.data?.firmware_type ?? null),
     };
   } catch (err) {
-    clearTimeout(timer);
     const latency = Math.round(performance.now() - startedAt);
     if ((err as Error).name === 'AbortError') {
       return { ok: false, message: `Timeout > ${timeoutMs}ms saat menghubungi GAS.`, latency_ms: latency };
     }
-    return { ok: false, message: `Kesalahan jaringan/CORS: ${(err as Error).message}`, latency_ms: latency };
+    // [p.488] redirect: 'error' surfaces here — a redirecting "GAS endpoint"
+    // is rejected before the token ever leaves the browser.
+    return { ok: false, message: `Kesalahan jaringan/CORS/redirect: ${(err as Error).message}`, latency_ms: latency };
   }
 }
 

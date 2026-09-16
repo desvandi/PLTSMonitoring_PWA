@@ -21,6 +21,7 @@
 import { useState, useRef } from 'react';
 import { api } from '@/lib/api';
 import { readSysConfig } from '@/lib/sysConfig';
+import { gasFetch } from '@/lib/gasFetch';
 import {
   resolveAuthorizedRelease,
   resolveAuthorizedReleaseFresh,
@@ -73,22 +74,17 @@ interface GasOtaEvent {
 async function fetchGasOtaHistory(deviceId: string): Promise<OtaHistoryEntry[] | null> {
   const config = readSysConfig();
   if (!config?.gas_webapp_url || !config.auth_token) return null;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15_000);
+  // [p.488 REMEDIATION] Hardened transport — allowlist + redirect: 'error'.
   try {
-    const res = await fetch(config.gas_webapp_url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    const res = await gasFetch(config.gas_webapp_url, {
       body: JSON.stringify({
         action: 'OTA_LOG',
         token: config.auth_token,
         device_key: deviceId || config.device_id,
         limit: 50,
       }),
-      signal: controller.signal,
-      redirect: 'follow',
+      timeoutMs: 15_000,
     });
-    clearTimeout(timer);
     if (!res.ok) return null;
     const body = (await res.json().catch(() => null)) as
       | { status?: string; data?: { events?: GasOtaEvent[] } }
@@ -120,7 +116,6 @@ async function fetchGasOtaHistory(deviceId: string): Promise<OtaHistoryEntry[] |
       message: e.message,
     }));
   } catch {
-    clearTimeout(timer);
     return null;
   }
 }
@@ -129,9 +124,24 @@ export function OtaView() {
   const { t, lang } = useLanguage();
   const qc = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const sigFileInputRef = useRef<HTMLInputElement>(null);
 
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
+  // [p.486 REMEDIATION 2026-09] Manual-upload security metadata — a raw .bin
+  // can no longer be pushed without SHA-256 + Ed25519 signature + version.
+  // SHA-256 is computed client-side the moment a file is selected; version +
+  // signature come from the release manifest (typed or picked from a .sig
+  // file). Demo mode (mock route only) keeps the legacy metadata-less path.
+  const [manualFile, setManualFile] = useState<File | null>(null);
+  const [manualSha256, setManualSha256] = useState<string | null>(null);
+  const [manualVersion, setManualVersion] = useState('');
+  const [manualSignature, setManualSignature] = useState('');
+  const MANUAL_DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
+  const MANUAL_SEMVER_OK = /^\d+\.\d+\.\d+$/.test(manualVersion.trim());
+  const MANUAL_SIG_OK = /^[0-9a-f]{128}$/i.test(manualSignature.trim());
+  const MANUAL_META_OK =
+    manualSha256 != null && MANUAL_SEMVER_OK && MANUAL_SIG_OK;
   const [canonicalRelease, setCanonicalRelease] = useState<CanonicalRelease | null>(null);
   // [P0 PWA-01 FIX] Full resolution result (ok / fail-closed reason), so the
   // UI can show WHY the authorized release is unavailable instead of a
@@ -329,6 +339,32 @@ export function OtaView() {
     }
   };
 
+  // [p.486 REMEDIATION] Shared upload runner — every manual upload path now
+  // carries the SAME security metadata contract as the canonical release
+  // path. `meta` is required for real devices (fail-closed in deviceApi too);
+  // demo mode alone may omit it (mock target).
+  const runManualUpload = async (file: File, meta?: { sha256: string; signature: string; version: string }) => {
+    setUploading(true);
+    setUploadProgress(0);
+    try {
+      const r = await api.otaUpload(file, (pct) => setUploadProgress(pct), meta);
+      toast.success(`OTA upload complete: v${r.newVersion ?? '?'}`);
+      qc.invalidateQueries({ queryKey: ['version'] });
+      qc.invalidateQueries({ queryKey: ['ota-history'] });
+    } catch (e) {
+      toast.error(`OTA failed: ${e instanceof Error ? e.message : 'unknown'}`);
+    } finally {
+      setUploading(false);
+      setUploadProgress(null);
+      setManualFile(null);
+      setManualSha256(null);
+      setManualVersion('');
+      setManualSignature('');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      if (sigFileInputRef.current) sigFileInputRef.current.value = '';
+    }
+  };
+
   const handleFile = async (file: File) => {
     if (!file.name.endsWith('.bin')) {
       toast.error('Please select a .bin firmware file');
@@ -338,19 +374,29 @@ export function OtaView() {
       toast.error('Firmware too large (max 1.5 MB)');
       return;
     }
-    setUploading(true);
-    setUploadProgress(0);
+    if (MANUAL_DEMO_MODE) {
+      // Demo/mock target only — the mock route accepts metadata-less uploads
+      // and no real device is involved.
+      await runManualUpload(file, undefined);
+      return;
+    }
+    // [p.486] Real-device path: compute SHA-256 immediately, then REQUIRE the
+    // operator to supply version + Ed25519 signature from the release
+    // manifest before the upload button unlocks.
     try {
-      const r = await api.otaUpload(file, (pct) => setUploadProgress(pct));
-      toast.success(`OTA upload complete: v${r.newVersion ?? '?'}`);
-      qc.invalidateQueries({ queryKey: ['version'] });
-      qc.invalidateQueries({ queryKey: ['ota-history'] });
-    } catch (e) {
-      toast.error(`OTA failed: ${e instanceof Error ? e.message : 'unknown'}`);
-    } finally {
-      setUploading(false);
-      setUploadProgress(null);
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      const arrayBuf = await file.arrayBuffer();
+      const hashBuf = await crypto.subtle.digest('SHA-256', arrayBuf);
+      const hashHex = Array.from(new Uint8Array(hashBuf))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+      setManualFile(file);
+      setManualSha256(hashHex);
+      toast.info(
+        'SHA-256 computed. Enter the firmware version and Ed25519 signature ' +
+        'from the release manifest (or pick the .sig file) to enable the upload.',
+      );
+    } catch {
+      toast.error('Failed to compute SHA-256 — secure context (HTTPS) is required.');
     }
   };
 
@@ -460,14 +506,98 @@ export function OtaView() {
                 if (f) handleFile(f);
               }}
             />
+            <input
+              ref={sigFileInputRef}
+              type="file" accept=".sig,.txt" className="hidden"
+              onChange={async (e) => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                const text = (await f.text()).trim();
+                setManualSignature(text);
+                toast.info('Signature file loaded — verify it is the Ed25519 signature for this .bin from the release manifest.');
+              }}
+            />
             <Button
               variant="default" size="sm"
-              disabled={uploading}
+              disabled={uploading || (manualFile != null && !MANUAL_DEMO_MODE)}
               onClick={() => fileInputRef.current?.click()}
             >
               <Upload className="w-3 h-3 mr-1" />
               {uploading ? t('ota.uploading') : t('ota.upload_binary')}
             </Button>
+
+            {/* [p.486 REMEDIATION] Manual-upload security metadata panel —
+                unlocks ONLY with SHA-256 (auto) + version + Ed25519 signature.
+                No more dual security standards between manual and canonical. */}
+            {manualFile && manualSha256 && !MANUAL_DEMO_MODE && (
+              <div className="space-y-2 rounded-md border border-border/60 p-3 bg-background/60">
+                <p className="text-[10px] text-muted-foreground">
+                  File: <span className="font-mono">{manualFile.name}</span> · SHA-256:{' '}
+                  <span className="font-mono text-status-on">{manualSha256.slice(0, 16)}…</span>
+                </p>
+                <div className="grid grid-cols-1 gap-2">
+                  <label className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                    Firmware version (SemVer, strict — anti-downgrade enforced)
+                    <input
+                      className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 text-xs font-mono"
+                      placeholder="e.g. 1.9.4"
+                      value={manualVersion}
+                      onChange={(e) => setManualVersion(e.target.value)}
+                    />
+                  </label>
+                  <label className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                    Ed25519 signature (128 hex chars, from the release manifest)
+                    <textarea
+                      className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 text-[10px] font-mono break-all"
+                      rows={2}
+                      placeholder="hex-encoded 64-byte signature…"
+                      value={manualSignature}
+                      onChange={(e) => setManualSignature(e.target.value)}
+                    />
+                  </label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline" size="sm"
+                    onClick={() => sigFileInputRef.current?.click()}
+                  >
+                    Load .sig file
+                  </Button>
+                  <Button
+                    variant="default" size="sm"
+                    disabled={!MANUAL_META_OK || uploading}
+                    onClick={() => runManualUpload(manualFile, {
+                      sha256: manualSha256!,
+                      signature: manualSignature.trim(),
+                      version: manualVersion.trim(),
+                    })}
+                  >
+                    <Shield className="w-3 h-3 mr-1" />
+                    Upload (signed)
+                  </Button>
+                  <Button
+                    variant="ghost" size="sm"
+                    disabled={uploading}
+                    onClick={() => {
+                      setManualFile(null); setManualSha256(null);
+                      setManualVersion(''); setManualSignature('');
+                      if (fileInputRef.current) fileInputRef.current.value = '';
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+                {(!MANUAL_SEMVER_OK || !MANUAL_SIG_OK) && (
+                  <p className="text-[10px] text-status-warn">
+                    Upload locked until version is strict SemVer and signature is
+                    128 hex chars — the device enforces the same headers
+                    (X-Expected-SHA256 / X-Signature / X-Firmware-Version) at
+                    UPLOAD_FILE_START.
+                  </p>
+                )}
+              </div>
+            )}
+
             {uploadProgress != null && (
               <div className="space-y-1">
                 <Progress value={uploadProgress} className="h-2" />
