@@ -19,6 +19,43 @@ export interface PushAlarmConfig {
   vapidPublicKey: string;
 }
 
+/**
+ * [SELF-AUDIT 2026-09-16] Device credentials for GAS push registration.
+ * The CURRENT Code.gs (audit-2 K-7) REQUIRES `device.id` + `token` on the
+ * `subscribe` action — the same device token the firmware sends for
+ * `ingest` (validated against Script Property FW_DEVICE_TOKEN(S)). A
+ * subscription registered without them is rejected fail-closed, so the PWA
+ * must resolve and attach the ACTIVE device's identity before registering.
+ */
+export interface PushDeviceCredentials {
+  deviceId: string;
+  token: string;
+}
+
+/**
+ * [SELF-AUDIT 2026-09-16] Build the GAS subscribe/unsubscribe body. Pure and
+ * unit-testable (no DOM). When credentials are present they ride the body as
+ * `device: { id }` + `token`; when absent the fields are OMITTED so the GAS
+ * rejection message surfaces verbatim to the operator (honest fail-closed).
+ */
+export function buildSubscriptionBody(
+  action: "subscribe" | "unsubscribe",
+  endpoint: string,
+  keys: { p256dh: string; auth: string },
+  creds: PushDeviceCredentials | null,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    action,
+    endpoint,
+    keys,
+  };
+  if (creds && creds.deviceId && creds.token) {
+    body.device = { id: creds.deviceId };
+    body.token = creds.token;
+  }
+  return body;
+}
+
 export type AlarmSeverity = "critical" | "warning" | "info";
 
 export interface AlarmPushPayload {

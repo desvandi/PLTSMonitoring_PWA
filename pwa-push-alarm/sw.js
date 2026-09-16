@@ -19,6 +19,13 @@ const SW_VERSION = 'v2.0.0';
 const CACHE_STATIC = 'miot-static-' + SW_VERSION;
 const CACHE_DATA = 'miot-data-' + SW_VERSION;
 
+/* [SELF-AUDIT 2026-09-16] Kredensial perangkat untuk kontrak GAS K-7
+ * (subscribe/unsubscribe wajib device.id + token). SW TIDAK bisa membaca
+ * localStorage — halaman mengirimkannya via postMessage
+ * PLTS_PUSH_ALARM_DEVICE_CREDENTIALS (lihat js/app.js). Hanya di MEMORI:
+ * tidak dipersist agar kredensial sesi tidak mengungguli umur proses SW. */
+let deviceCredentials = null;
+
 /* Konfigurasi endpoint GAS (harus sama dengan js/config.js).
  * Service worker tidak bisa membaca config.js -> ditanam di sini
  * dan diganti saat build/deploy. */
@@ -365,6 +372,14 @@ async function resubscribe() {
     const reg = await self.registration.pushManager.getSubscription();
     if (!reg) return; // tidak ada sebelumnya -> tidak paksa-minta izin
 
+    // [SELF-AUDIT 2026-09-16] GAS K-7: re-registrasi WAJIB kredensial.
+    // Tanpa kredensial (SW dingin, halaman belum dibuka) -> BATAL: mendaftar
+    // lokal tanpa registrasi server hanya menciptakan keadaan "berlangganan"
+    // palsu yang diam-diam tidak menerima apa pun. Endpoint basi akan
+    // dipangkas GAS saat push berikutnya memantul 410; operator mengaktifkan
+    // ulang dari panel saat aplikasi dibuka.
+    if (!deviceCredentials) return;
+
     // Ambil applicationServerKey lama agar konsisten.
     const oldKey = reg.options && reg.options.applicationServerKey;
 
@@ -379,6 +394,8 @@ async function resubscribe() {
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({
         action: 'subscribe',
+        device: { id: deviceCredentials.deviceId },
+        token: deviceCredentials.token,
         endpoint: sub.endpoint,
         keys: sub.toJSON().keys,
         context: { reason: 'pushsubscriptionchange', addedAt: new Date().toISOString() }
@@ -397,6 +414,20 @@ async function resubscribe() {
 self.addEventListener('message', (event) => {
   if (event.data === 'SKIP_WAITING') {
     self.skipWaiting();
+    return;
+  }
+  // [SELF-AUDIT 2026-09-16] Kredensial perangkat dari halaman (kontrak GAS
+  // K-7). Payload divalidasi bentuknya; null/invalid menghapus kredensial
+  // lama (logout propagasi ke SW). Tidak dipersist ke cache/IndexedDB.
+  if (event.data && typeof event.data === 'object' &&
+      event.data.type === 'PLTS_PUSH_ALARM_DEVICE_CREDENTIALS') {
+    var c = event.data.credentials;
+    if (c && typeof c.deviceId === 'string' && typeof c.token === 'string' &&
+        c.deviceId.trim() && c.token.trim()) {
+      deviceCredentials = { deviceId: c.deviceId.trim(), token: c.token.trim() };
+    } else {
+      deviceCredentials = null;
+    }
     return;
   }
   // Hook pengujian: simulasi event push dengan payload tertentu.

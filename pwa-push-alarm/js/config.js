@@ -18,6 +18,16 @@ const APP_CONFIG = {
   // Ganti dengan public key VAPID milik Anda (dari generate-vapid-keys.js):
   VAPID_PUBLIC_KEY: 'BIiRx1N3GANTI_DENGAN_PUBLIC_KEY_VAPID_ANDA_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
 
+  // [SELF-AUDIT 2026-09-16] Kontrak GAS K-7: subscribe/unsubscribe wajib
+  // autentikasi perangkat. Isi device id + token perangkat Anda (token yang
+  // sama dengan yang dikirim firmware untuk `ingest`; GAS memvalidasinya
+  // via Script Property FW_DEVICE_TOKEN / FW_DEVICE_TOKENS).
+  // Alternatif tanpa mengedit file ini: set localStorage
+  // 'push.deviceId' dan 'push.deviceToken' dari DevTools console.
+  // Kosongkan keduanya bila backend GAS Anda masih versi lama (tanpa K-7).
+  DEVICE_ID: '',
+  DEVICE_TOKEN: '',
+
   // Versi aplikasi - dipakai untuk diagnostik & cache busting:
   APP_VERSION: '2.0.0',
 

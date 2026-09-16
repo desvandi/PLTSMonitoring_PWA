@@ -50,11 +50,43 @@
           });
         });
         registerPeriodicSync(reg);
+        // [SELF-AUDIT 2026-09-16] Kirim kredensial perangkat (kontrak GAS
+        // K-7) ke SW aktif — resubscribe() latar belakang membutuhkannya.
+        // Best-effort: SW belum aktif -> dilewati; dikirim ulang saat
+        // halaman dibuka berikutnya.
+        sendDeviceCredentialsToSw();
       })
       .catch((err) => {
         // SW gagal -> PWA jadi aplikasi biasa; alarm push tidak tersedia.
         showBanner('Service worker gagal dimuat: ' + err.message, true);
       });
+  }
+
+  /**
+   * [SELF-AUDIT 2026-09-16] Dorong kredensial perangkat (localStorage
+   * 'push.deviceId' / 'push.deviceToken', fallback APP_CONFIG.DEVICE_ID /
+   * DEVICE_TOKEN) ke service worker aktif. SW tidak bisa membaca localStorage
+   * sendiri; kredensial disimpan SW hanya di memori (tidak dipersist).
+   */
+  function sendDeviceCredentialsToSw() {
+    try {
+      var deviceId = (localStorage.getItem('push.deviceId') || '').trim();
+      var deviceToken = (localStorage.getItem('push.deviceToken') || '').trim();
+      if (!deviceId && typeof APP_CONFIG !== 'undefined' && APP_CONFIG.DEVICE_ID) {
+        deviceId = String(APP_CONFIG.DEVICE_ID).trim();
+      }
+      if (!deviceToken && typeof APP_CONFIG !== 'undefined' && APP_CONFIG.DEVICE_TOKEN) {
+        deviceToken = String(APP_CONFIG.DEVICE_TOKEN).trim();
+      }
+      var target = navigator.serviceWorker.controller;
+      if (!target) return; // SW belum mengendalikan halaman — coba load berikutnya
+      target.postMessage({
+        type: 'PLTS_PUSH_ALARM_DEVICE_CREDENTIALS',
+        credentials: (deviceId && deviceToken)
+          ? { deviceId: deviceId, token: deviceToken }
+          : null
+      });
+    } catch (e) { /* best-effort */ }
   }
 
   /**

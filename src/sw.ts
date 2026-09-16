@@ -6,10 +6,12 @@ import {
   ALARM_VIEW_TARGET,
   alarmTitleOf,
   buildAlarmNotificationOptions,
+  buildSubscriptionBody,
   urlBase64ToUint8Array,
   type AlarmNotificationOptions,
   type AlarmPushPayload,
   type PushAlarmConfig,
+  type PushDeviceCredentials,
 } from "./lib/push-alarm/shared";
 import { loadPushAlarmRuntimeConfig, savePushAlarmRuntimeConfig, sanitizePushAlarmConfig } from "./lib/push-alarm/sw-config-store";
 
@@ -50,6 +52,17 @@ const PUSH_ALARM_TITLE_FALLBACK = "Alarm PLTS Monitor";
 const LATEST_ALARM_TIMEOUT_MS = 10000;
 
 let pushAlarmConfigCache: PushAlarmConfig | null = null;
+
+/**
+ * [SELF-AUDIT 2026-09-16] ACTIVE device credentials for GAS push
+ * registration (K-7 contract: subscribe/unsubscribe require device.id +
+ * token). IN-MEMORY ONLY — deliberately NOT persisted to IndexedDB, so the
+ * session credential never outlives the SW process (p.483 posture). The
+ * page pushes a fresh value via PLTS_PUSH_ALARM_DEVICE_CREDENTIALS on
+ * mount / token change / focus; a cold SW starts with null and skips
+ * authenticated re-registration (fail-closed, see resubscribePushAlarm).
+ */
+let pushAlarmDeviceCredentials: PushDeviceCredentials | null = null;
 
 async function resolvePushAlarmConfig(): Promise<PushAlarmConfig> {
   if (pushAlarmConfigCache) return pushAlarmConfigCache;
@@ -222,6 +235,16 @@ async function resubscribePushAlarm(): Promise<void> {
     // konsisten dengan pengirim (GAS) -> lebih aman batal daripada menebak.
     if (!config.vapidPublicKey) return;
 
+    // [SELF-AUDIT 2026-09-16] GAS K-7: re-registration REQUIRES device
+    // credentials. A cold SW (restarted, page not yet opened) has none in
+    // memory — attempting the registration anyway would only produce a
+    // guaranteed rejection, and subscribing locally WITHOUT a server
+    // registration would leave a phantom "subscribed" state that silently
+    // receives nothing. Fail-closed: skip; the next app open re-pushes
+    // credentials (PushAlarmBridge) and the operator re-enables from the
+    // panel. The stale endpoint is pruned by GAS on the next 410 bounce.
+    if (!pushAlarmDeviceCredentials) return;
+
     await existing.unsubscribe().catch(() => undefined);
     const sub = await self.registration.pushManager.subscribe({
       userVisibleOnly: true,
@@ -230,15 +253,19 @@ async function resubscribePushAlarm(): Promise<void> {
 
     if (!config.apiBase) return;
     const json = sub.toJSON();
+    const body = {
+      ...buildSubscriptionBody(
+        "subscribe",
+        sub.endpoint,
+        { p256dh: json.keys?.p256dh ?? "", auth: json.keys?.auth ?? "" },
+        pushAlarmDeviceCredentials,
+      ),
+      context: { reason: "pushsubscriptionchange", addedAt: new Date().toISOString() },
+    };
     await fetch(config.apiBase, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({
-        action: "subscribe",
-        endpoint: sub.endpoint,
-        keys: { p256dh: json.keys?.p256dh, auth: json.keys?.auth },
-        context: { reason: "pushsubscriptionchange", addedAt: new Date().toISOString() },
-      }),
+      body: JSON.stringify(body),
       credentials: "omit",
     });
   } catch {
@@ -253,7 +280,9 @@ async function resubscribePushAlarm(): Promise<void> {
  * ========================================================================== */
 
 self.addEventListener("message", (event: ExtendableMessageEvent) => {
-  const data = event.data as { type?: string; config?: PushAlarmConfig } | null;
+  const data = event.data as
+    | { type?: string; config?: PushAlarmConfig; credentials?: { deviceId?: unknown; token?: unknown } | null }
+    | null;
   if (data && typeof data.type === "string" && data.type === "PLTS_PUSH_ALARM_CONFIG" && data.config) {
     // [AUDIT p.491-old REMEDIATION 2026-09] The SW no longer trusts the
     // postMessage payload blindly — the STRICT sanitizer in
@@ -272,5 +301,25 @@ self.addEventListener("message", (event: ExtendableMessageEvent) => {
     pushAlarmConfigCache = sanitized;
     // Persist agar bertahan restart SW; best-effort.
     void savePushAlarmRuntimeConfig(sanitized).catch(() => undefined);
+  }
+  // [SELF-AUDIT 2026-09-16] Device credentials for the GAS K-7 contract.
+  // In-memory ONLY (never persisted — see the note above the variable).
+  // Null clears them (logout / token revocation propagates to the SW).
+  if (data && typeof data.type === "string" && data.type === "PLTS_PUSH_ALARM_DEVICE_CREDENTIALS") {
+    const c = data.credentials;
+    if (
+      c &&
+      typeof (c as { deviceId?: unknown }).deviceId === "string" &&
+      typeof (c as { token?: unknown }).token === "string" &&
+      (c as { deviceId: string }).deviceId.trim().length > 0 &&
+      (c as { token: string }).token.trim().length > 0
+    ) {
+      pushAlarmDeviceCredentials = {
+        deviceId: (c as { deviceId: string }).deviceId.trim(),
+        token: (c as { token: string }).token.trim(),
+      };
+    } else {
+      pushAlarmDeviceCredentials = null;
+    }
   }
 });
