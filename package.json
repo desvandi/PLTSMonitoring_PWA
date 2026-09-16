@@ -86,6 +86,9 @@
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
   },
+  "overrides": {
+    "browserslist": "^4.29.0"
+  },
   "engines": {
     "node": ">=24.0.0"
   }
