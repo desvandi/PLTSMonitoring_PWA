@@ -138,6 +138,7 @@ export function parseEmergencyBlock(raw: unknown): EmergencySnapshot {
 // attached at runtime via withAdminToken(); the persisted profile never
 // carries it.
 import { resolveAdminToken } from './adminTokenSession';
+import { gasFetch } from './gasFetch';
 
 export interface EmergencyCommandResult {
   ok: boolean;
@@ -182,17 +183,14 @@ export async function sendEmergencyCommand(
   if (opts.note) payload.note = opts.note.slice(0, 200);
   if (command === "CONFIG") payload.config = opts.config ?? DEFAULT_EMERGENCY_CONFIG;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // [p.488 REMEDIATION] gasFetch enforces the strict GAS origin allowlist and
+  // redirect: 'error' — a request carrying admin_token/auth_token NEVER
+  // follows a cross-origin redirect to an unknown host.
   try {
-    const res = await fetch(device.gas_webapp_url, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
+    const res = await gasFetch(device.gas_webapp_url, {
       body: JSON.stringify(payload),
-      signal: controller.signal,
-      redirect: "follow",
+      timeoutMs,
     });
-    clearTimeout(timer);
     if (!res.ok) return { ok: false, message: `HTTP ${res.status}` };
     const body = (await res.json().catch(() => null)) as {
       status?: string;
@@ -208,7 +206,6 @@ export async function sendEmergencyCommand(
       queued: ok,
     };
   } catch (err) {
-    clearTimeout(timer);
     return { ok: false, message: (err as Error).message };
   }
 }
@@ -219,22 +216,18 @@ export async function fetchEmergencyLog(
   limit = 20,
   timeoutMs = 12000,
 ): Promise<{ ok: boolean; message: string; events: EmergencyEventEntry[] }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // [p.488 REMEDIATION] Same hardened transport as sendEmergencyCommand —
+  // allowlist + redirect: 'error' (the auth_token rides this body too).
   try {
-    const res = await fetch(device.gas_webapp_url, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
+    const res = await gasFetch(device.gas_webapp_url, {
       body: JSON.stringify({
         action: "EMERGENCY_LOG",
         token: device.auth_token,
         device_key: device.device_id,
         limit,
       }),
-      signal: controller.signal,
-      redirect: "follow",
-    } as RequestInit);
-    clearTimeout(timer);
+      timeoutMs,
+    });
     if (!res.ok) return { ok: false, message: `HTTP ${res.status}`, events: [] };
     const body = (await res.json().catch(() => null)) as {
       status?: string;
@@ -246,7 +239,6 @@ export async function fetchEmergencyLog(
     const events = Array.isArray(body.data?.events) ? body.data!.events! : [];
     return { ok, message: body.message || (ok ? "OK" : "ERROR"), events };
   } catch (err) {
-    clearTimeout(timer);
     return { ok: false, message: (err as Error).message, events: [] };
   }
 }

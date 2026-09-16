@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { headers } from "next/headers";
 import { Analytics } from "@vercel/analytics/next";
 import { SpeedInsights } from "@vercel/speed-insights/next";
 // [WAVE-7 / PW7-2] SerwistProvider mendaftarkan /sw.js (build @serwist/next).
@@ -72,6 +73,14 @@ export const metadata: Metadata = {
 
 // CRITICAL FIX (vs reference): userScalable: true (WCAG 1.4.4 — allow zoom).
 // Reference had userScalable: false which violates accessibility.
+// [AUDIT p.481 REMEDIATION 2026-09] Nonce-based CSP requires PER-REQUEST
+// rendering: a statically prerendered shell can never carry the per-request
+// nonce, so its inline bootstrap/flight scripts would be blocked by
+// script-src 'nonce-…' (broken hydration). Every HTML route therefore
+// renders dynamically — the app is an authenticated dashboard; static-shell
+// caching has no meaningful benefit to preserve.
+export const dynamic = "force-dynamic";
+
 export const viewport: Viewport = {
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#F8FAFC" },
@@ -84,11 +93,16 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // [p.481] The per-request nonce from src/middleware.ts — forwarded to the
+  // next-themes ThemeProvider so its anti-FOUC inline script carries the
+  // nonce and passes script-src 'nonce-…' (the ONLY inline script that is
+  // not a Next-managed bootstrap/flight script).
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
   return (
     <html lang="id" suppressHydrationWarning>
       <head>
@@ -99,7 +113,7 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
       >
-        <ThemeProvider>
+        <ThemeProvider nonce={nonce}>
           <LanguageProvider>
             <QueryProvider>
               {/* [AUDIT 2026-08-28 F9] SysConfigProvider must wrap AuthProvider —

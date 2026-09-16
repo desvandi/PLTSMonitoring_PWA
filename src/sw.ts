@@ -11,7 +11,7 @@ import {
   type AlarmPushPayload,
   type PushAlarmConfig,
 } from "./lib/push-alarm/shared";
-import { loadPushAlarmRuntimeConfig, savePushAlarmRuntimeConfig } from "./lib/push-alarm/sw-config-store";
+import { loadPushAlarmRuntimeConfig, savePushAlarmRuntimeConfig, sanitizePushAlarmConfig } from "./lib/push-alarm/sw-config-store";
 
 declare const self: ServiceWorkerGlobalScope & {
   __SW_MANIFEST?: Array<PrecacheEntry | string>;
@@ -142,14 +142,30 @@ self.addEventListener("notificationclick", (event: NotificationEvent) => {
 });
 
 async function handleNotificationClick(event: NotificationEvent): Promise<void> {
-  const data = (event.notification.data ?? {}) as { alarmId?: string | null; ackUrl?: string };
+  const data = (event.notification.data ?? {}) as {
+    alarmId?: string | null;
+    ackUrl?: string;
+    ackToken?: string | null;
+  };
 
   if (event.action === "ack" && data.alarmId && data.ackUrl) {
+    // [AUDIT p.482 REMEDIATION 2026-09] ACK sekarang membawa CAPABILITY
+    // TOKEN (HMAC per-alarm, berlaku terbatas) yang diterbitkan GAS
+    // PushService bersama notifikasi. Sebelumnya ACK dikirim dengan HANYA
+    // alarmId — siapa pun yang mengetahui URL GAS + ID alarm bisa mengirim
+    // ACK palsu (mutasi state tanpa autentikasi). Token inilah otorisasinya;
+    // GAS (setelah update kontrak) menolak ACK tanpa token valid.
+    // Tokenless send tetap dilakukan untuk kompatibilitas GAS lama saat
+    // transisi (GAS baru yang meng-enforce).
+    const ackBody: Record<string, unknown> = { action: "ackAlarm", alarmId: data.alarmId };
+    if (typeof data.ackToken === "string" && data.ackToken.length > 0) {
+      ackBody.ackToken = data.ackToken;
+    }
     try {
       await fetch(data.ackUrl, {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({ action: "ackAlarm", alarmId: data.alarmId }),
+        body: JSON.stringify(ackBody),
         credentials: "omit",
       });
     } catch {
@@ -239,12 +255,22 @@ async function resubscribePushAlarm(): Promise<void> {
 self.addEventListener("message", (event: ExtendableMessageEvent) => {
   const data = event.data as { type?: string; config?: PushAlarmConfig } | null;
   if (data && typeof data.type === "string" && data.type === "PLTS_PUSH_ALARM_CONFIG" && data.config) {
-    const config: PushAlarmConfig = {
+    // [AUDIT p.491-old REMEDIATION 2026-09] The SW no longer trusts the
+    // postMessage payload blindly — the STRICT sanitizer in
+    // sw-config-store (GAS webapp URL format + 65-byte VAPID key) runs
+    // BEFORE the config is cached or persisted. The validation chain is
+    // now: input → validate (page) → persist → SW REVALIDATE → use.
+    const candidate: PushAlarmConfig = {
       apiBase: String(data.config.apiBase || ""),
       vapidPublicKey: String(data.config.vapidPublicKey || ""),
     };
-    pushAlarmConfigCache = config;
+    const sanitized = sanitizePushAlarmConfig(candidate);
+    if (!sanitized) {
+      // Reject malformed config at the SW boundary — never cache or persist it.
+      return;
+    }
+    pushAlarmConfigCache = sanitized;
     // Persist agar bertahan restart SW; best-effort.
-    void savePushAlarmRuntimeConfig(config).catch(() => undefined);
+    void savePushAlarmRuntimeConfig(sanitized).catch(() => undefined);
   }
 });

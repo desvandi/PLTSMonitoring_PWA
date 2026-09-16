@@ -233,6 +233,12 @@ function buildAlarmOptions(p) {
       url: p.url || './index.html?from=push',
       alarmId: p.id || null,
       ackUrl: API_BASE,
+      // [audit p.482 REMEDIATION 2026-09] Capability token ACK (HMAC
+      // per-alarm, berlaku terbatas) yang diterbitkan GAS PushService
+      // bersama notifikasi. ACK tanpa token valid akan ditolak GAS — siapa
+      // pun yang hanya mengetahui URL + alarmId tidak bisa lagi mengirim
+      // ACK palsu.
+      ackToken: (typeof p.ackToken === 'string' && p.ackToken.length > 0) ? p.ackToken : null,
       severity: severity
     },
     actions: [
@@ -301,10 +307,17 @@ async function handleNotificationClick(event) {
         trustedOrigins.push(ackParsed.origin);
       }
       if (trustedOrigins.indexOf(ackParsed.origin) !== -1) {
+        // [audit p.482 REMEDIATION 2026-09] ACK membawa capability token dari
+        // notifikasi — otorisasi ACK kalah kriptografis, bukan sekadar
+        // pengetahuan URL + alarmId.
+        var ackBody = { action: 'ackAlarm', alarmId: data.alarmId };
+        if (typeof data.ackToken === 'string' && data.ackToken.length > 0) {
+          ackBody.ackToken = data.ackToken;
+        }
         await fetch(ackParsed.href, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({ action: 'ackAlarm', alarmId: data.alarmId }),
+          body: JSON.stringify(ackBody),
           credentials: 'omit'
         });
       }

@@ -6,6 +6,7 @@ import { useLanguage } from '@/components/providers/language-provider';
 import { useAuth } from '@/components/providers/auth-provider';
 import { useMqtt } from '@/components/providers/mqtt-provider';
 import { useVersion, useStatus } from '@/hooks/useApi';
+import { canOpenView as canOpenViewFor } from '@/lib/view-authorization';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
@@ -73,10 +74,11 @@ const NAV_ITEMS: NavItem[] = [
 // Mobile bottom-nav subset (top 5 most used)
 const MOBILE_NAV: ViewKey[] = ['dashboard', 'battery', 'alarms', 'energy', 'settings'];
 
-// [PWA-02 REMEDIATION 2026-08] Operator-only views — mutating surfaces gated
-// by session role. A viewer-scoped MQTT session (broker subscription proves
-// READ identity only) cannot open config/calibration/OTA/settings.
-const OPERATOR_ONLY_VIEWS: ViewKey[] = ['calibration', 'config', 'ota', 'settings', 'relays'];
+// [PWA-02 + p.484/p.485b REMEDIATION 2026-09] Operator-only views now live
+// in lib/view-authorization.ts — THE single source of truth consumed by
+// mobile nav, desktop sidebar AND the page-level render guard
+// (OperatorViewGuard). 'emergency' is now operator-only (ARM/DISARM/CONFIG
+// controls). The desktop sidebar previously bypassed this gate entirely.
 
 export function AppShell({ children }: { children: ReactNode }) {
   const { currentView, setView } = useUiStore();
@@ -106,10 +108,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   // (no REST base URL, no broker) is GAS mode — not "mock". Mock/demo only
   // applies when neither a real backend NOR a GAS profile exists.
   const isMock = !hasRestApi && !isMqttMode && !isGasMode;
-  // [PWA-02] Role gate: viewer sessions cannot reach mutating views.
-  const isViewer = session.role === 'viewer';
-  const canOpenView = (v: ViewKey) =>
-    !isViewer || !OPERATOR_ONLY_VIEWS.includes(v);
+  // [PWA-02 + p.484] Role gate: viewer sessions cannot reach mutating views.
+  // The SAME gate now applies to the DESKTOP sidebar (previously bypassed) —
+  // canOpenViewFor() comes from lib/view-authorization.ts (single source of
+  // truth, also enforced at render time by OperatorViewGuard).
+  const canOpenView = (v: ViewKey) => canOpenViewFor(session.role, v);
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
@@ -262,16 +265,23 @@ export function AppShell({ children }: { children: ReactNode }) {
             {NAV_ITEMS.map((item) => {
               const Icon = item.icon;
               const active = currentView === item.key;
+              // [p.484 REMEDIATION] Desktop sidebar now enforces the SAME
+              // canOpenView() gate as mobile — onClick is gated AND the button
+              // is disabled with an explanatory title for viewer sessions.
+              const allowed = canOpenView(item.key);
               return (
                 <button
                   key={item.key}
-                  onClick={() => onNavClick(item.key)}
+                  onClick={() => allowed && onNavClick(item.key)}
+                  disabled={!allowed}
+                  title={!allowed ? 'Viewer scope — operator login required' : undefined}
                   data-testid={`nav-desktop-${item.key}`}
                   className={cn(
                     'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
                     active
                       ? 'bg-primary/10 text-primary border border-primary/20'
                       : 'text-muted-foreground hover:bg-muted hover:text-foreground border border-transparent',
+                    !allowed && 'opacity-40 cursor-not-allowed hover:bg-transparent hover:text-muted-foreground',
                   )}
                 >
                   <Icon className="w-4 h-4 flex-shrink-0" />

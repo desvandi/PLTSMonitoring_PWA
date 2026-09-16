@@ -28,6 +28,48 @@ const brokerUrl = (): string => process.env.NEXT_PUBLIC_MQTT_BROKER_URL || "";
 const brokerUsername = (): string => process.env.NEXT_PUBLIC_MQTT_USERNAME || "";
 const brokerPassword = (): string => process.env.NEXT_PUBLIC_MQTT_PASSWORD || "";
 
+/**
+ * [AUDIT p.486-old REMEDIATION 2026-09] Server-held MQTT credentials.
+ * Preferred source: the authenticated same-origin route /api/mqtt/credentials
+ * (env MQTT_USERNAME/MQTT_PASSWORD on the server — NEVER baked into the public
+ * bundle). Backwards-compatible fallback: NEXT_PUBLIC_* values (documented as
+ * VIEWER, READ-ONLY-ACL credentials; must never carry publish rights).
+ * Pure-MQTT viewer deployments without a PWA login keep working through the
+ * fallback; new deployments should provision server-side credentials and a
+ * read-only broker ACL instead.
+ */
+async function resolveMqttCredentials(): Promise<{
+  username?: string;
+  password?: string;
+}> {
+  try {
+    const res = await fetch("/api/mqtt/credentials", {
+      credentials: "include",
+      cache: "no-store",
+      signal: AbortSignal.timeout(3000),
+    });
+    if (res.ok) {
+      const json = (await res.json()) as {
+        success?: boolean;
+        data?: { username?: string; password?: string };
+      } | null;
+      if (json?.data?.username) {
+        return {
+          username: json.data.username,
+          password: json.data.password ?? "",
+        };
+      }
+    }
+  } catch {
+    // Route unreachable (offline dev, test env, unauthenticated session) —
+    // fall through to the compatibility path below.
+  }
+  const u = brokerUsername();
+  const p = brokerPassword();
+  if (u) return { username: u, password: p };
+  return {};
+}
+
 // [PWA-19] Diagnostics logging gated to development — the previous build
 // logged broker URL + clientId + granted topics to the browser console.
 const mqttLog = (...args: unknown[]) => {
@@ -105,79 +147,81 @@ export function isMqttConnected(): boolean {
 }
 
 export function connectMqtt(deviceId: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const MQTT_BROKER_URL = brokerUrl();
-    // [PWA-03] Fail closed: no broker URL → refuse to connect (NEVER fall
-    // back to a public unauthenticated broker).
-    if (!MQTT_BROKER_URL) {
-      reject(
-        new Error(
-          "MQTT broker not configured: set NEXT_PUBLIC_MQTT_BROKER_URL (authenticated broker, TLS/WSS)",
-        ),
-      );
-      return;
-    }
-    // [W7-1 REMEDIATION 2026-09] TLS-only broker URL — the PWA counterpart of
-    // the firmware PRODUCTION_BUILD #error guards (port 8883/8884 + root CA).
-    // A ws:// (plaintext) URL would send telemetry + viewer credentials in
-    // the clear; it is now rejected. EXPLICIT dev bypass only, mirroring the
-    // firmware's DEVELOPMENT_BUILD setInsecure() pattern: visible, never
-    // silent, never available in a production build.
-    // NOTE: new URL() normalizes the scheme to lowercase (RFC 3986 — scheme
-    // is case-insensitive), so "WSS://…" is accepted as TLS.
-    {
-      let parsed: URL;
-      try {
-        parsed = new URL(MQTT_BROKER_URL.trim());
-      } catch {
-        reject(
-          new Error(
-            "MQTT broker URL is not a valid absolute URL — expected " +
-              "wss://host:port/path. Set NEXT_PUBLIC_MQTT_BROKER_URL to an " +
-              "authenticated TLS endpoint.",
-          ),
-        );
-        return;
-      }
-      const isTls = parsed.protocol === "wss:";
-      const devBypass =
-        parsed.protocol === "ws:" && process.env.NODE_ENV === "development";
-      if (!isTls && !devBypass) {
-        reject(
-          new Error(
-            `MQTT broker URL must use wss:// (TLS) — got "${parsed.protocol}". ` +
-              "Refusing a plaintext connection; set NEXT_PUBLIC_MQTT_BROKER_URL " +
-              "to an authenticated TLS endpoint (wss://…).",
-          ),
-        );
-        return;
-      }
-    }
+  // [p.487/p.486-old REMEDIATION 2026-09] connectMqtt is now async all the
+  // way down: all fail-closed validations run BEFORE any network activity,
+  // and credentials resolve from the authenticated server route first
+  // (server-held), falling back to the documented NEXT_PUBLIC viewer pair.
+  const MQTT_BROKER_URL = brokerUrl();
+  // [PWA-03] Fail closed: no broker URL → refuse to connect (NEVER fall
+  // back to a public unauthenticated broker).
+  if (!MQTT_BROKER_URL) {
+    return Promise.reject(
+      new Error(
+        "MQTT broker not configured: set NEXT_PUBLIC_MQTT_BROKER_URL (authenticated broker, TLS/WSS)",
+      ),
+    );
+  }
+  // [W7-1 REMEDIATION 2026-09] TLS-only broker URL — the PWA counterpart of
+  // the firmware PRODUCTION_BUILD #error guards (port 8883/8884 + root CA).
+  // A ws:// (plaintext) URL would send telemetry + viewer credentials in
+  // the clear; it is now rejected. EXPLICIT dev bypass only, mirroring the
+  // firmware's DEVELOPMENT_BUILD setInsecure() pattern: visible, never
+  // silent, never available in a production build.
+  // NOTE: new URL() normalizes the scheme to lowercase (RFC 3986 — scheme
+  // is case-insensitive), so "WSS://…" is accepted as TLS.
+  let parsed: URL;
+  try {
+    parsed = new URL(MQTT_BROKER_URL.trim());
+  } catch {
+    return Promise.reject(
+      new Error(
+        "MQTT broker URL is not a valid absolute URL — expected " +
+          "wss://host:port/path. Set NEXT_PUBLIC_MQTT_BROKER_URL to an " +
+          "authenticated TLS endpoint.",
+      ),
+    );
+  }
+  const isTls = parsed.protocol === "wss:";
+  const devBypass =
+    parsed.protocol === "ws:" && process.env.NODE_ENV === "development";
+  if (!isTls && !devBypass) {
+    return Promise.reject(
+      new Error(
+        `MQTT broker URL must use wss:// (TLS) — got "${parsed.protocol}". ` +
+          "Refusing a plaintext connection; set NEXT_PUBLIC_MQTT_BROKER_URL " +
+          "to an authenticated TLS endpoint (wss://…).",
+      ),
+    );
+  }
+
+  // [W11-1 REMEDIATION 2026-09] Device ID contract — the firmware/ modular
+  // generates "PLTS-XXXXXX" (6 hex, lower 24-bit eFuse MAC, see
+  // firmware_v1.ino snprintf "PLTS-%06X"); the documented generic form is
+  // "PLTS-XXXXXXXX" (8 hex). The PWA previously demanded 8 hex ONLY —
+  // stricter than every producer in the fleet, so MQTT realtime could
+  // NEVER connect to a real modular device (operator typed the ID printed
+  // by the device and got rejected). The PWA now accepts the EXACT union
+  // {6, 8} (explicit alternation — NOT the {6,8} range, which would also
+  // admit 7 hex and quietly blur the contract): charset stays uppercase
+  // hex, so topic wildcards ('+','#','/') can never enter a topic via the
+  // device ID.
+  const normalized = deviceId.toUpperCase().replace(/[^A-Z0-9-]/g, "");
+  if (!/^PLTS-(?:[A-F0-9]{6}|[A-F0-9]{8})$/.test(normalized)) {
+    return Promise.reject(
+      new Error(
+        "Device ID must be format PLTS-XXXXXX or PLTS-XXXXXXXX " +
+          "(6 or 8 hex chars, as printed by the device)",
+      ),
+    );
+  }
+
+  // [p.486-old REMEDIATION] Server-held credentials resolve BEFORE the
+  // connection is opened (authenticated route first, documented
+  // NEXT_PUBLIC viewer pair as the compatibility fallback).
+  return resolveMqttCredentials().then((creds) => {
     if (state.client) {
       state.client.end(true);
       state.client = null;
-    }
-
-    // [W11-1 REMEDIATION 2026-09] Device ID contract — the firmware/ modular
-    // generates "PLTS-XXXXXX" (6 hex, lower 24-bit eFuse MAC, see
-    // firmware_v1.ino snprintf "PLTS-%06X"); the documented generic form is
-    // "PLTS-XXXXXXXX" (8 hex). The PWA previously demanded 8 hex ONLY —
-    // stricter than every producer in the fleet, so MQTT realtime could
-    // NEVER connect to a real modular device (operator typed the ID printed
-    // by the device and got rejected). The PWA now accepts the EXACT union
-    // {6, 8} (explicit alternation — NOT the {6,8} range, which would also
-    // admit 7 hex and quietly blur the contract): charset stays uppercase
-    // hex, so topic wildcards ('+','#','/') can never enter a topic via the
-    // device ID.
-    const normalized = deviceId.toUpperCase().replace(/[^A-Z0-9-]/g, "");
-    if (!/^PLTS-(?:[A-F0-9]{6}|[A-F0-9]{8})$/.test(normalized)) {
-      reject(
-        new Error(
-          "Device ID must be format PLTS-XXXXXX or PLTS-XXXXXXXX " +
-            "(6 or 8 hex chars, as printed by the device)",
-        ),
-      );
-      return;
     }
     state.deviceId = normalized;
 
@@ -199,10 +243,14 @@ export function connectMqtt(deviceId: string): Promise<void> {
       reconnectPeriod: 1000,
       connectTimeout: 10000,
       clean: true,
-      ...(brokerUsername() ? { username: brokerUsername() } : {}),
-      ...(brokerPassword() ? { password: brokerPassword() } : {}),
+      ...(creds.username ? { username: creds.username } : {}),
+      ...(creds.password ? { password: creds.password } : {}),
     });
 
+    // [p.486-old/p.487] The connection lifecycle now settles inside an inner
+    // promise — the outer .then() chain keeps the credential fetch out of the
+    // fail-closed validation path.
+    return new Promise<void>((resolve, reject) => {
     // [audit-2 S-8] Manual exponential backoff. mqtt.js doesn't support
     // backoff natively — it uses a fixed reconnectPeriod. We override the
     // option on each offline event so the next reconnect waits longer.
@@ -287,18 +335,41 @@ export function connectMqtt(deviceId: string): Promise<void> {
         mqttWarn(`oversized payload on ${topic} (${payload.length} bytes) — dropping`);
         return;
       }
+      // [p.487 REMEDIATION 2026-09] DEVICE-ID BINDING (authenticity layer):
+      // a message is only accepted from the EXACT topic tree of the device
+      // this session subscribed to (plts/<deviceId>/…). A broker bug or a
+      // malicious publisher pushing look-alike topics (plts/<otherId>/status,
+      // or a topic that merely ENDS with /status) can no longer inject
+      // telemetry into this dashboard.
+      const expectedPrefix = `plts/${state.deviceId}/`;
+      if (state.deviceId && !topic.startsWith(expectedPrefix)) {
+        mqttWarn(`topic binding mismatch — expected "${expectedPrefix}*", got "${topic}" — dropping`);
+        return;
+      }
       const msg = payload.toString();
-      if (topic.endsWith("/status")) {
+      if (topic === `${expectedPrefix}status`) {
         try {
           const parsed: unknown = JSON.parse(msg);
-          // [audit-2 S-2] Shape validation — was `as SystemStatus` cast
-          // without validation. A malformed/broker-compromised payload
-          // could crash downstream code accessing nested fields.
+          // [audit-2 S-2 + p.487] Shape validation — was `as SystemStatus`
+          // cast with a shallow validator. Now: strict envelope contract
+          // (timestamp bounds, battery.voltage presence, SOC range) plus
+          // envelope deviceId↔session binding when the field is present.
           if (!isValidStatusEnvelope(parsed)) {
             mqttWarn(`invalid status envelope on ${topic} — dropping`);
             return;
           }
           const status = parsed as SystemStatus;
+          const envelopeDeviceId = (parsed as { deviceId?: unknown }).deviceId;
+          if (
+            typeof envelopeDeviceId === "string" &&
+            state.deviceId &&
+            envelopeDeviceId.toUpperCase() !== state.deviceId
+          ) {
+            mqttWarn(
+              `envelope deviceId "${envelopeDeviceId}" ≠ subscribed "${state.deviceId}" — dropping (possible spoof)`,
+            );
+            return;
+          }
           // [PWA-01] Store the newest envelope for the query bridge + emit.
           lastStatus = status;
           lastStatusAtMs = Date.now();
@@ -306,14 +377,21 @@ export function connectMqtt(deviceId: string): Promise<void> {
         } catch (e) {
           mqttWarn("failed to parse status JSON:", e);
         }
-      } else if (topic.endsWith("/log")) {
+      } else if (topic === `${expectedPrefix}log`) {
         try {
-          const log = JSON.parse(msg) as ActivityLog;
+          const parsed: unknown = JSON.parse(msg);
+          // [p.487] /log payloads were previously cast with NO validation —
+          // a malformed entry reached log consumers as garbage state.
+          if (!isValidLogEntry(parsed)) {
+            mqttWarn(`invalid log entry on ${topic} — dropping`);
+            return;
+          }
+          const log = parsed as ActivityLog;
           logCallbacks.forEach((cb) => cb(log));
         } catch (e) {
           mqttWarn("failed to parse log JSON:", e);
         }
-      } else if (topic.endsWith("/online")) {
+      } else if (topic === `${expectedPrefix}online`) {
         const online = msg === "1";
         onlineCallbacks.forEach((cb) => cb(online));
       }
@@ -335,7 +413,8 @@ export function connectMqtt(deviceId: string): Promise<void> {
     client.on("reconnect", () => {
       mqttLog("reconnecting...");
     });
-  });
+    }); // end inner connection promise
+  }); // end credentials .then()
 }
 
 export function disconnectMqtt() {
@@ -365,19 +444,78 @@ export function onOnlineChange(cb: OnlineCallback): () => void {
 }
 
 /**
- * [audit-2 S-2] Validate that a parsed MQTT payload has the shape of a
- * SystemStatus envelope. Returns false on any missing required field —
- * downstream code can safely access nested fields without crashing.
- * Conservative: checks ONLY for the fields the PWA actually reads. Any
- * field not listed here is treated as optional.
+ * [audit-2 S-2 + AUDIT p.487 REMEDIATION 2026-09] STRICT envelope contract.
+ * The previous validator accepted `{timestamp: <any number>, battery: {}}` —
+ * a partial/spoofed envelope was promoted to a fully-trusted SystemStatus.
+ * Now every field the dashboard actually consumes is verified:
+ *   - timestamp: finite AND bounded (not pre-2020, not > now + 10 min skew)
+ *   - battery.voltage: PRESENT as an object with a `value` field — the value
+ *     itself may legitimately be null (firmware NaN-safe serializer emits
+ *     null for an absent sensor, never a fabricated 0)
+ *   - battery.current.value: null or finite when the block is present
+ *   - battery.soc.value: null or finite within [0,100] when present
+ *   - deviceId (when present) is bound to the subscribed device at the
+ *     call site (see the message handler's envelope binding check)
  */
+const TIMESTAMP_MIN_MS = Date.UTC(2020, 0, 1);
+const TIMESTAMP_MAX_SKEW_MS = 10 * 60 * 1000;
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+/** value must be present (key exists) and be null-or-finite. */
+function isNullableFiniteNumber(v: unknown): boolean {
+  return v === null || isFiniteNumber(v);
+}
+
 function isValidStatusEnvelope(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return false;
   const p = payload as Record<string, unknown>;
-  // Required top-level fields used by the PWA
-  if (typeof p.timestamp !== "number") return false;
-  // battery is required; nested .voltage.value is the most-used field
-  if (!p.battery || typeof p.battery !== "object") return false;
-  return true;  // other fields (pv, grid, environment, ...) are optional
+  // timestamp: finite + bounded (rejects 123456789-style garbage seconds,
+  // far-past/far-future clocks, and non-numeric values)
+  if (!isFiniteNumber(p.timestamp)) return false;
+  if (p.timestamp < TIMESTAMP_MIN_MS) return false;
+  if (p.timestamp > Date.now() + TIMESTAMP_MAX_SKEW_MS) return false;
+  // battery: required object with the voltage block PRESENT (value nullable)
+  const b = p.battery;
+  if (!b || typeof b !== "object") return false;
+  const batt = b as Record<string, unknown>;
+  const voltage = batt.voltage;
+  if (!voltage || typeof voltage !== "object") return false;
+  if (!("value" in (voltage as Record<string, unknown>))) return false;
+  if (!isNullableFiniteNumber((voltage as Record<string, unknown>).value)) return false;
+  // current block: optional, but when present its value must be null/finite
+  const current = batt.current;
+  if (current !== undefined && current !== null) {
+    if (typeof current !== "object" || !("value" in (current as Record<string, unknown>))) return false;
+    if (!isNullableFiniteNumber((current as Record<string, unknown>).value)) return false;
+  }
+  // soc block: optional; value must be null or finite within [0,100]
+  const soc = batt.soc;
+  if (soc !== undefined && soc !== null && typeof soc === "object") {
+    const socValue = (soc as Record<string, unknown>).value;
+    if (socValue !== undefined && socValue !== null) {
+      if (!isFiniteNumber(socValue)) return false;
+      if (socValue < 0 || socValue > 100) return false;
+    }
+  }
+  return true; // other blocks (ac, environment, health, ...) are optional
+}
+
+/**
+ * [p.487 REMEDIATION] /log entries were previously cast with NO validation.
+ * Minimum honest contract: finite bounded timestamp + string type + string
+ * message — anything else is dropped before reaching log consumers.
+ */
+function isValidLogEntry(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const p = payload as Record<string, unknown>;
+  if (!isFiniteNumber(p.timestamp)) return false;
+  if (p.timestamp < TIMESTAMP_MIN_MS) return false;
+  if (p.timestamp > Date.now() + TIMESTAMP_MAX_SKEW_MS) return false;
+  if (typeof p.type !== "string" || p.type.length === 0) return false;
+  if (typeof p.message !== "string") return false;
+  return true;
 }
 

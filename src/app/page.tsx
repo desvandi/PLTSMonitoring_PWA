@@ -4,6 +4,7 @@ import { useAuth } from '@/components/providers/auth-provider';
 import { useUiStore } from '@/lib/store';
 import { LoginForm } from '@/components/auth/login-form';
 import { AppShell } from '@/components/layout/app-shell';
+import { OperatorViewGuard } from '@/components/layout/operator-view-guard';
 import { DashboardView } from '@/components/dashboard/dashboard-view';
 import { FleetView } from '@/components/fleet/fleet-view';
 import { BatteryView } from '@/components/battery/battery-view';
@@ -51,18 +52,36 @@ export default function Home() {
       {currentView === 'ac' && <AcOutputView />}
       {currentView === 'environment' && <EnvironmentView />}
       {currentView === 'energy' && <EnergyAnalyticsView />}
-      {currentView === 'calibration' && <CalibrationCenter />}
-      {currentView === 'config' && <ConfigurationCenter />}
       {currentView === 'alarms' && <AlarmCenter />}
       {currentView === 'diagnostics' && <DiagnosticsView />}
       {currentView === 'sensors' && <SensorHealthView />}
       {currentView === 'events' && <EventLogView />}
       {currentView === 'reports' && <ReportsView />}
       {currentView === 'ai' && <AiView />}
-      {currentView === 'settings' && <SettingsView />}
-      {currentView === 'ota' && <OtaView />}
-      {currentView === 'emergency' && <EmergencyControlView />}
-      {currentView === 'relays' && <RelayControlView />}
+      {/* [p.484/p.485b REMEDIATION 2026-09] Render-level authorization guard:
+          the currentView switch previously mounted operator-only views for
+          ANY authenticated session — navigation hiding is UX, not a boundary.
+          A viewer session that reaches one of these views (persisted
+          zustand state, store manipulation, stale tab) now gets an explicit
+          ACCESS-DENIED panel; the view component never mounts. */}
+      {currentView === 'calibration' && (
+        <OperatorViewGuard view="calibration"><CalibrationCenter /></OperatorViewGuard>
+      )}
+      {currentView === 'config' && (
+        <OperatorViewGuard view="config"><ConfigurationCenter /></OperatorViewGuard>
+      )}
+      {currentView === 'settings' && (
+        <OperatorViewGuard view="settings"><SettingsView /></OperatorViewGuard>
+      )}
+      {currentView === 'ota' && (
+        <OperatorViewGuard view="ota"><OtaView /></OperatorViewGuard>
+      )}
+      {currentView === 'emergency' && (
+        <OperatorViewGuard view="emergency"><EmergencyControlView /></OperatorViewGuard>
+      )}
+      {currentView === 'relays' && (
+        <OperatorViewGuard view="relays"><RelayControlView /></OperatorViewGuard>
+      )}
     </AppShell>
   );
 }

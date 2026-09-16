@@ -9,69 +9,77 @@
 // only cleared the cookie — the JWT itself remained valid until exp. An
 // attacker who stole the JWT (XSS, log leak, shared machine) could keep
 // using it after the user clicked "Logout". Now every issued JWT carries a
-// `jti` (JWT ID), and `destroySession` adds the jti to an in-memory blacklist
+// `jti` (JWT ID), and `destroySession` adds the jti to a blacklist
 // that `getSession` consults. Blacklist entries auto-expire when their JWT
 // would have expired anyway (no unbounded growth).
+//
+// [AUDIT p.479 REMEDIATION 2026-09] The blacklist moved from a process-local
+// Map to a SHARED store (Upstash Redis REST when configured; in-memory
+// fallback otherwise) — logout revocation is now GLOBAL across Vercel
+// serverless instances, not per-instance. See lib/revocation-store.ts.
+//
+// [AUDIT p.484 follow-up] The PWA session JWT now carries an explicit
+// `role: "operator"` claim, and requireAuth() enforces it: viewer-scoped
+// tokens (should they ever exist server-side) are rejected with 403 on EVERY
+// route that calls requireAuth — role enforcement is not navigation-only.
 // =============================================================================
 
 import { cookies } from "next/headers";
 import { verifyJwt, generateRandomToken, signJwt } from "@/lib/jwt";
 import { getJwtSecret, isMockAuthEnabled } from "@/lib/mockStore";
+import { revokeJti, isJtiRevoked } from "@/lib/revocation-store";
 
 export const JWT_COOKIE = "plts_jwt";
 export const CSRF_COOKIE = "plts_csrf";
 const SESSION_TTL_SECONDS = 3600; // 1 hour
 
-// [audit-2 K-4] In-memory JWT revocation list (jti blacklist).
-// Entries: jti -> exp (ms epoch). Auto-pruned on every consult.
-// Note: This is process-local; in a multi-instance deployment (Vercel with
-// multiple serverless instances), the blacklist is per-instance. For full
-// coverage, move to a shared store (Upstash Redis, KV). For the demo / small
-// deployment target (single instance), this is sufficient.
-const revokedJtis = new Map<string, number>();
-
-function pruneRevokedJtis(): void {
-  const now = Date.now();
-  for (const [jti, exp] of revokedJtis) {
-    if (exp <= now) revokedJtis.delete(jti);
-  }
-}
+// [audit-2 K-4 → p.479] The revoked-jti list now lives in the SHARED store
+// (Upstash Redis REST when configured; process-local fallback otherwise).
+// See lib/revocation-store.ts for the availability policy.
 
 export type AuthResult = {
   authenticated: boolean;
   username: string | null;
   expiresAt: number | null;
+  role: "operator" | "viewer" | null;
 };
 
 export async function getSession(): Promise<AuthResult> {
   if (!isMockAuthEnabled()) {
-    return { authenticated: false, username: null, expiresAt: null };
+    return { authenticated: false, username: null, expiresAt: null, role: null };
   }
   const cookieStore = await cookies();
   const token = cookieStore.get(JWT_COOKIE)?.value;
-  if (!token) return { authenticated: false, username: null, expiresAt: null };
+  if (!token) return { authenticated: false, username: null, expiresAt: null, role: null };
   const secret = getJwtSecret();
-  if (!secret) return { authenticated: false, username: null, expiresAt: null };
+  if (!secret) return { authenticated: false, username: null, expiresAt: null, role: null };
   const payload = verifyJwt(token, secret);
-  if (!payload) return { authenticated: false, username: null, expiresAt: null };
-  // [audit-2 K-4] Check revocation list. Auto-prune expired entries on consult.
-  pruneRevokedJtis();
-  if (typeof payload.jti === "string" && revokedJtis.has(payload.jti)) {
-    return { authenticated: false, username: null, expiresAt: null };
+  if (!payload) return { authenticated: false, username: null, expiresAt: null, role: null };
+  // [audit-2 K-4 / p.479] Shared revocation check — consults the shared store
+  // (Redis) so an instance that never saw the logout still rejects the JWT.
+  if (typeof payload.jti === "string" && (await isJtiRevoked(payload.jti))) {
+    return { authenticated: false, username: null, expiresAt: null, role: null };
   }
   return {
     authenticated: true,
     username: payload.sub ?? null,
     expiresAt: payload.exp,
+    role: (payload.role as "operator" | "viewer" | undefined) ?? "operator",
   };
 }
 
 export async function requireAuth(): Promise<
-  { ok: true; username: string } | { ok: false; status: 401; message: string }
+  { ok: true; username: string } | { ok: false; status: 401 | 403; message: string }
 > {
   const session = await getSession();
   if (!session.authenticated) {
     return { ok: false, status: 401, message: "Unauthorized" };
+  }
+  // [p.484 follow-up] Role enforcement at the API boundary — a viewer-scoped
+  // token can never pass requireAuth, so EVERY mutation route (and read
+  // route) that uses this gate is operator-gated by construction.
+  if (session.role === "viewer") {
+    return { ok: false, status: 403, message: "Forbidden — viewer scope cannot use this endpoint" };
   }
   return { ok: true, username: session.username! };
 }
@@ -111,9 +119,10 @@ export async function createSession(username: string) {
 }
 
 export async function destroySession() {
-  // [audit-2 K-4] Revoke the JWT before clearing the cookie. Extract jti
-  // from the cookie, add to blacklist until exp. Without this, a stolen JWT
-  // remains valid until its natural expiry.
+  // [audit-2 K-4 / p.479] Revoke the JWT in the SHARED store before clearing
+  // the cookie. Extract jti from the cookie and publish it globally (Redis)
+  // so EVERY serverless instance rejects the token from now on — not just
+  // the instance that happened to serve the logout request.
   const cookieStore = await cookies();
   const token = cookieStore.get(JWT_COOKIE)?.value;
   if (token) {
@@ -121,7 +130,7 @@ export async function destroySession() {
     if (secret) {
       const payload = verifyJwt(token, secret);
       if (payload && typeof payload.jti === "string" && payload.exp) {
-        revokedJtis.set(payload.jti, payload.exp);
+        await revokeJti(payload.jti, payload.exp);
       }
     }
   }
@@ -146,5 +155,8 @@ export async function verifyCsrfToken(req: Request): Promise<boolean> {
 }
 
 function signSession(username: string, ttlSeconds: number, secret: string, jti: string) {
-  return signJwt({ sub: username, jti }, secret, ttlSeconds);
+  // [p.484 follow-up] Explicit operator role claim — PWA logins are
+  // operator-scope by construction (single-admin device model); viewer
+  // sessions (MQTT/GAS) never receive a PWA JWT.
+  return signJwt({ sub: username, jti, role: "operator" }, secret, ttlSeconds);
 }
