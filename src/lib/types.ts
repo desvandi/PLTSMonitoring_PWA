@@ -320,7 +320,7 @@ export interface DeviceConfig {
   // (autoZeroAcs712OnBoot / sht31HeaterEnabled) were mockStore-only shapes
   // with NO authoritative firmware implementation — the PWA rendered cards
   // that could never appear in production. Removed per feature registry
-  // F-SOC-002 / F-CAL-002 (docs/feature-registry.md, firmware repo).
+  // F-SOC-002 / F-CAL-002 (ghost-feature audit, firmware repo).
   // REAL SOC sync knobs: fullChargeCurrentThreshold + fullChargePersistenceSec.
   // REAL calibration surface: the Calibration type (calibration wizard).
 }
