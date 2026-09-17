@@ -51,6 +51,9 @@ const withSerwist = withSerwistInit({
 const nextConfig: NextConfig = {
   output: "standalone",
   reactStrictMode: true,
+  // [Audit 2026-09-17] Jangan bocorkan teknologi server via header
+  // `x-powered-by: Next.js` (information disclosure ke perangkat publik).
+  poweredByHeader: false,
   typescript: {
     ignoreBuildErrors: false,
   },
