@@ -177,8 +177,7 @@
       // menghubungi server placeholder/palsu - tampilkan layar setup.
       showSetupScreen(
         'Deployment ini belum diprovision: URL GAS / kunci VAPID belum diatur ' +
-        'pada build (PUSH_API_BASE / PUSH_VAPID_PUBLIC_KEY) atau lewat form ini. ' +
-        'Lihat PROVISIONING.md.');
+        'pada build (PUSH_API_BASE / PUSH_VAPID_PUBLIC_KEY) atau lewat form ini.');
       registerServiceWorker(); // SW tetap teregistrasi untuk update app
       return;
     }

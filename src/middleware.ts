@@ -14,7 +14,7 @@
 //     the shadcn chart component injects a <style> tag with dynamic CSS
 //     custom properties (chart.tsx). Removing it requires refactoring the
 //     theming layer; style injection is materially lower risk than script
-//     injection and is tracked in REMEDIATION.md.
+//     injection and is tracked as an accepted residual.
 //   frame-ancestors 'none' + X-Frame-Options: DENY — the PWA has no
 //     same-origin embedding requirement; clickjacking surface removed.
 //
