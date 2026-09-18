@@ -1,0 +1,87 @@
+name: broker-acl-live
+
+# ============================================================================
+# [GATE-7 / F8 2026-09] LIVE broker ACL acceptance test.
+# Verifikasi ENFORCEMENT ACL di sisi broker nyata (HiveMQ Cloud) — bukan
+# application metadata. Menjalankan scripts/broker-acl-test.mjs (matriks
+# T0..T7) terhadap broker produksi/staging.
+#
+# Keadaan jujur: jika secrets belum diprovision, job GAGAL dengan pesan
+# eksplisit — TIDAK silently skipped (disiplin anti-false-closure).
+# Semua `uses:` dipin ke commit SHA 40-hex (kebijakan S2-01 / Gate 8).
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: "Alasan / catatan operator (mis. verifikasi pasca-konfigurasi ACL)"
+        required: false
+        default: ""
+      other_device_id:
+        description: "Device ID lain untuk uji isolasi lintas-perangkat (default: <device_id>-other)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  broker-acl:
+    name: Live broker ACL acceptance test (F8 / Gate 7)
+    runs-on: ubuntu-latest
+    steps:
+      - # actions/checkout v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - # actions/setup-node v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - name: Frozen dependency install (npm ci)
+        run: npm ci
+      - name: Preconditions — kredensial broker harus terprovision (fail-closed, bukan skip)
+        env:
+          BROKER_URL: ${{ secrets.BROKER_ACL_TEST_URL }}
+          VIEWER_USER: ${{ secrets.BROKER_ACL_VIEWER_USER }}
+          VIEWER_PASS: ${{ secrets.BROKER_ACL_VIEWER_PASS }}
+          DEVICE_USER: ${{ secrets.BROKER_ACL_DEVICE_USER }}
+          DEVICE_PASS: ${{ secrets.BROKER_ACL_DEVICE_PASS }}
+          DEVICE_ID: ${{ secrets.BROKER_ACL_DEVICE_ID }}
+        run: |
+          missing=()
+          [ -n "$BROKER_URL" ]     || missing+=("BROKER_ACL_TEST_URL")
+          [ -n "$VIEWER_USER" ]    || missing+=("BROKER_ACL_VIEWER_USER")
+          [ -n "$VIEWER_PASS" ]    || missing+=("BROKER_ACL_VIEWER_PASS")
+          [ -n "$DEVICE_USER" ]    || missing+=("BROKER_ACL_DEVICE_USER")
+          [ -n "$DEVICE_PASS" ]    || missing+=("BROKER_ACL_DEVICE_PASS")
+          [ -n "$DEVICE_ID" ]      || missing+=("BROKER_ACL_DEVICE_ID")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "LIVE BROKER ACL VERIFICATION TIDAK DAPAT DIJALANKAN."
+            echo "Secrets berikut belum diprovision: ${missing[*]}"
+            echo "Provision secrets repo (Settings > Secrets > Actions) sesuai"
+            echo "docs/broker-acl/ACL-POLICY.md §3, lalu jalankan ulang workflow ini."
+            exit 1
+          fi
+          echo "OK: secrets broker ACL lengkap."
+      - name: Jalankan matriks acceptance ACL (T0..T7)
+        env:
+          BROKER_URL: ${{ secrets.BROKER_ACL_TEST_URL }}
+          VIEWER_USER: ${{ secrets.BROKER_ACL_VIEWER_USER }}
+          VIEWER_PASS: ${{ secrets.BROKER_ACL_VIEWER_PASS }}
+          DEVICE_USER: ${{ secrets.BROKER_ACL_DEVICE_USER }}
+          DEVICE_PASS: ${{ secrets.BROKER_ACL_DEVICE_PASS }}
+          DEVICE_ID: ${{ secrets.BROKER_ACL_DEVICE_ID }}
+        run: |
+          OTHER="${{ github.event.inputs.other_device_id }}"
+          ARGS=(--url "$BROKER_URL" \
+                --viewer-user "$VIEWER_USER" --viewer-pass "$VIEWER_PASS" \
+                --device-user "$DEVICE_USER" --device-pass "$DEVICE_PASS" \
+                --device-id "$DEVICE_ID")
+          if [ -n "$OTHER" ]; then ARGS+=(--other-device-id "$OTHER"); fi
+          node scripts/broker-acl-test.mjs "${ARGS[@]}"
+      - name: Ringkasan
+        if: always()
+        run: |
+          echo "Matriks & kebijakan: docs/broker-acl/ACL-POLICY.md"
+          echo "Exit non-zero = ada pelanggaran ACL terdeteksi atau precondition gagal."
