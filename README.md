@@ -281,9 +281,11 @@ NEXT_PUBLIC_DEMO_MODE=false
 
 # MQTT (optional, realtime subscribe-only; TLS wss:// enforced)
 NEXT_PUBLIC_MQTT_BROKER_URL=wss://broker.example.com:8884
-# Optional viewer credentials (read-only broker user)
-# NEXT_PUBLIC_MQTT_USERNAME=viewer
-# NEXT_PUBLIC_MQTT_PASSWORD=...
+# [GATE-3 / S1-01 2026-09] NO NEXT_PUBLIC MQTT credentials — they would be
+# inlined into the public JS bundle. Viewer credentials are server-held
+# (MQTT_USERNAME/MQTT_PASSWORD) and served to authenticated sessions via
+# /api/mqtt/credentials only; the production config gate FAILS the build if
+# either NEXT_PUBLIC_MQTT_* credential variable is set.
 
 # Web Push alarm (optional)
 # NEXT_PUBLIC_PUSH_API_BASE=https://script.google.com/macros/s/AKfycb.../exec
@@ -367,7 +369,7 @@ vercel --prod
 | `NEXT_PUBLIC_BACKEND_API_BASE_URL` | Tidak | `NEXT_PUBLIC_API_BASE_URL` | Base URL agregasi server-side (reports/OTA) |
 | `NEXT_PUBLIC_DEMO_MODE` | Tidak | `false` | Demo mode (mock data; force-off di build produksi) |
 | `NEXT_PUBLIC_MQTT_BROKER_URL` | Tidak | — | MQTT broker URL (`wss://` saja; `ws://` hanya dev) |
-| `NEXT_PUBLIC_MQTT_USERNAME` / `NEXT_PUBLIC_MQTT_PASSWORD` | Tidak | — | Kredensial viewer read-only broker |
+| `MQTT_USERNAME` / `MQTT_PASSWORD` | Tidak (MQTT) | — | Kredensial viewer server-side — hanya via `/api/mqtt/credentials` (NEXT_PUBLIC MQTT credentials DILARANG; build gagal jika diset) |
 | `NEXT_PUBLIC_PUSH_API_BASE` | Tidak | — | GAS PushService URL (web push alarm) |
 | `NEXT_PUBLIC_PUSH_VAPID_PUBLIC_KEY` | Tidak | — | Kunci publik VAPID (65-byte base64url) |
 | `NEXT_PUBLIC_EXPECTED_FIRMWARE_TAG` | Tidak (staging) | `v1.9.3` (dari release-policy.json) | Tag rilis otoritatif untuk staging build |

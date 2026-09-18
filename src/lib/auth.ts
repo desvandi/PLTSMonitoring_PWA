@@ -66,6 +66,16 @@ export async function getSession(): Promise<AuthResult> {
   if (!secret) return UNAUTHENTICATED;
   const payload = verifyJwt(token, secret);
   if (!payload) return UNAUTHENTICATED;
+  // [GATE-2 / F6 REMEDIATION 2026-09 — ROLE FAIL-CLOSED]
+  // audit Phase 2 F6 / Phase 1 F6: the OLD shape defaulted a missing/unknown
+  // role to "operator" (`payload.role ?? "operator"`) — a valid token with
+  // no role claim silently received the HIGHEST privilege. Fail-closed now:
+  // only an explicit, known role authenticates; anything else is rejected
+  // (surface as 401 via UNAUTHENTICATED — never a privilege upgrade).
+  const rawRole = payload.role;
+  if (rawRole !== "operator" && rawRole !== "viewer") {
+    return UNAUTHENTICATED;
+  }
   // [audit-2 K-4 / p.479 / p.492] Shared revocation check — TRI-STATE.
   // `revoked` rejects immediately; `verified === false` is carried up so
   // requireAuth({ mutation: true }) can fail CLOSED for state changes.
@@ -79,7 +89,7 @@ export async function getSession(): Promise<AuthResult> {
     authenticated: true,
     username: payload.sub ?? null,
     expiresAt: payload.exp,
-    role: (payload.role as "operator" | "viewer" | undefined) ?? "operator",
+    role: rawRole,
     revocationVerified: revocation.verified,
   };
 }
@@ -149,8 +159,15 @@ export async function createSession(username: string) {
     path: "/",
     maxAge: SESSION_TTL_SECONDS,
   });
+  // [GATE-2 / F2-AUTH-007 REMEDIATION 2026-09 — NO BEARER TOKEN IN JS]
+  // audit Phase 2 F2-AUTH-007: the session JWT was ALSO returned in the JSON
+  // body ("token"), defeating the purpose of the HttpOnly cookie — any XSS,
+  // logging middleware, or error reporter could capture the bearer credential.
+  // The response now carries ONLY what the frontend actually consumes
+  // (csrfToken, expiresAt, username); the JWT exists exclusively in the
+  // HttpOnly cookie. The api.ts contract and auth-provider need no change
+  // (they only ever consumed csrfToken).
   return {
-    token,
     csrfToken,
     expiresAt: Date.now() + SESSION_TTL_SECONDS * 1000,
     username,

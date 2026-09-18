@@ -1,10 +1,17 @@
 // =============================================================================
-// mqtt.test.ts — W7-1 remediation contract (TLS-only broker URL).
+// mqtt.test.ts — W7-1 remediation contract (TLS-only broker URL) +
+// GATE-3/S1-01 contract (server-held credentials only, fail-closed).
 // -----------------------------------------------------------------------------
 // AUDIT FINDING (W7-1, Wave 7 MQTT/TLS review): connectMqtt() accepted ANY
 // broker URL scheme — a ws:// (plaintext) URL silently connected production
 // builds without TLS, while the firmware side already failed closed
 // (PRODUCTION_BUILD #error: port 8883/8884 + MQTT_ROOT_CA required).
+//
+// AUDIT FINDING (Phase 10 S1-01 / Phase 5 F5-01): the NEXT_PUBLIC_MQTT_
+// USERNAME/PASSWORD fallback could inline the broker password into the public
+// JS bundle. The fallback is DELETED — resolveMqttCredentials() now serves
+// ONLY from /api/mqtt/credentials and connectMqtt() fails CLOSED when the
+// route fails.
 //
 // REMEDIATION TRUTH RULES under test:
 //   W1  Empty broker URL → reject "not configured" (PWA-03, unchanged).
@@ -13,6 +20,15 @@
 //   W4  Foreign scheme (http://, tcp://, garbage) → REJECTED.
 //   W5  ws:// is an EXPLICIT development-only bypass (NODE_ENV=development).
 //   W6  The rejection does NOT tear down an existing client connection.
+//
+// GATE-3 / S1-01 TRUTH RULES under test:
+//   C1  Credential route unreachable → connection REFUSED (fail-closed),
+//       mqtt.connect() NEVER called — even if NEXT_PUBLIC credentials exist.
+//   C2  Credential route answers 401/503 → REFUSED, no connect attempt.
+//   C3  Credential route returns a credential → connect() receives the
+//       server-held username/password.
+//   C4  NEXT_PUBLIC_MQTT_USERNAME/PASSWORD are IGNORED — stubbing them
+//       cannot rescue a failed credential route (no fallback exists).
 // =============================================================================
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -25,13 +41,37 @@ type Conn = {
 };
 
 const connectCalls: string[] = [];
+const connectOptions: Record<string, unknown>[] = [];
 const subscribedTopics: string[] = [];
 const activeClients: Conn[] = [];
 
+// --- [GATE-3/S1-01] fetch mock: /api/mqtt/credentials responder ----------------
+// Default behavior: authenticated 200 with a server-held viewer credential.
+let credsStatus = 200;
+let credsBody: unknown = {
+  success: true,
+  message: "",
+  data: { username: "server-viewer", password: "server-secret" },
+};
+let credsNetworkError = false;
+
+vi.stubGlobal("fetch", vi.fn(async (input: unknown) => {
+  const url = typeof input === "string" ? input : String((input as URL)?.toString?.() ?? input);
+  if (String(url).includes("/api/mqtt/credentials")) {
+    if (credsNetworkError) throw new TypeError("fetch failed");
+    return new Response(
+      typeof credsBody === "string" ? credsBody : JSON.stringify(credsBody),
+      { status: credsStatus, headers: { "content-type": "application/json" } },
+    );
+  }
+  throw new TypeError(`unexpected fetch: ${url}`);
+}));
+
 vi.mock("mqtt", () => ({
   default: {
-    connect: (url: string): Conn => {
+    connect: (url: string, opts?: Record<string, unknown>): Conn => {
       connectCalls.push(url);
+      connectOptions.push(opts ?? {});
       const handlers = new Map<string, (...a: unknown[]) => void>();
       const c: Conn = {
         url,
@@ -74,7 +114,16 @@ async function importMqtt() {
 
 beforeEach(() => {
   connectCalls.length = 0;
+  connectOptions.length = 0;
   activeClients.length = 0;
+  // [GATE-3/S1-01] default credential responder: healthy server-held pair.
+  credsStatus = 200;
+  credsBody = {
+    success: true,
+    message: "",
+    data: { username: "server-viewer", password: "server-secret" },
+  };
+  credsNetworkError = false;
 });
 
 afterEach(() => {
@@ -237,5 +286,89 @@ describe("W11-1: deviceId contract — union {6,8} hex", () => {
     disconnectMqtt();   // isolate module state from previous cases
     await connectMqtt("plts-1a2b3c").catch(() => {});
     expect(getMqttDeviceId()).toBe("PLTS-1A2B3C");
+  });
+});
+
+// =============================================================================
+// GATE-3 / S1-01: server-held credentials ONLY — fail-closed, no fallback.
+// -----------------------------------------------------------------------------
+// The browser obtains MQTT credentials exclusively through the authenticated
+// /api/mqtt/credentials route. NEXT_PUBLIC_MQTT_USERNAME / _PASSWORD do not
+// exist as a fallback anymore — stubbing them must never rescue a failed
+// credential route, and no connection may be attempted without a credential.
+// =============================================================================
+describe("GATE-3/S1-01: server-held MQTT credentials only (fail-closed)", () => {
+  const good = "wss://broker.example.com:8884/mqtt";
+
+  it("C1: credential route unreachable → connection REFUSED, mqtt.connect never called", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MQTT_BROKER_URL", good);
+    vi.stubEnv("NODE_ENV", "production");
+    credsNetworkError = true;
+    const { connectMqtt } = await importMqtt();
+    await expect(connectMqtt("PLTS-AB12CD34")).rejects.toThrow(
+      /credentials unavailable|could not be reached/i,
+    );
+    expect(connectCalls).toHaveLength(0);
+  });
+
+  it("C2: credential route answers 401 (unauthenticated) → REFUSED, no connect", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MQTT_BROKER_URL", good);
+    vi.stubEnv("NODE_ENV", "production");
+    credsStatus = 401;
+    const { connectMqtt } = await importMqtt();
+    await expect(connectMqtt("PLTS-AB12CD34")).rejects.toThrow(/answered 401/i);
+    expect(connectCalls).toHaveLength(0);
+  });
+
+  it("C2b: credential route answers 503 (unconfigured) → REFUSED, no connect", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MQTT_BROKER_URL", good);
+    vi.stubEnv("NODE_ENV", "production");
+    credsStatus = 503;
+    const { connectMqtt } = await importMqtt();
+    await expect(connectMqtt("PLTS-AB12CD34")).rejects.toThrow(/answered 503/i);
+    expect(connectCalls).toHaveLength(0);
+  });
+
+  it("C2c: credential route returns 200 but no credential → REFUSED, no connect", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MQTT_BROKER_URL", good);
+    vi.stubEnv("NODE_ENV", "production");
+    credsBody = { success: false, message: "x", data: null };
+    const { connectMqtt } = await importMqtt();
+    await expect(connectMqtt("PLTS-AB12CD34")).rejects.toThrow(
+      /returned no credential/i,
+    );
+    expect(connectCalls).toHaveLength(0);
+  });
+
+  it("C3: healthy credential route → connect() receives the server-held pair", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MQTT_BROKER_URL", good);
+    vi.stubEnv("NODE_ENV", "production");
+    const { connectMqtt } = await importMqtt();
+    await connectMqtt("PLTS-AB12CD34").catch(() => {});
+    expect(connectCalls).toEqual([good]);
+    expect(connectOptions).toHaveLength(1);
+    expect(connectOptions[0].username).toBe("server-viewer");
+    expect(connectOptions[0].password).toBe("server-secret");
+  });
+
+  it("C4: NEXT_PUBLIC_MQTT_USERNAME/PASSWORD are IGNORED (no fallback exists)", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MQTT_BROKER_URL", good);
+    vi.stubEnv("NODE_ENV", "production");
+    // Even with public credentials "configured", a failed route still refuses.
+    vi.stubEnv("NEXT_PUBLIC_MQTT_USERNAME", "public-viewer");
+    vi.stubEnv("NEXT_PUBLIC_MQTT_PASSWORD", "public-secret");
+    credsNetworkError = true;
+    const { connectMqtt } = await importMqtt();
+    await expect(connectMqtt("PLTS-AB12CD34")).rejects.toThrow(
+      /credentials unavailable|could not be reached/i,
+    );
+    expect(connectCalls).toHaveLength(0);
+    // And when the route IS healthy, the PUBLIC values must NOT reach the
+    // broker — only the server-held pair is used.
+    credsNetworkError = false;
+    await connectMqtt("PLTS-AB12CD34").catch(() => {});
+    expect(connectOptions).toHaveLength(1);
+    expect(connectOptions[0].username).toBe("server-viewer");
+    expect(connectOptions[0].password).toBe("server-secret");
   });
 });

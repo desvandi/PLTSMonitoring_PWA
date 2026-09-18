@@ -159,7 +159,27 @@ jobs:
           fi
           echo "OK: development fallback blocked (exit 1)"
 
-      - name: "(d) Staging channel sanity — explicit staging override must be allowed"
+      # [GATE-3 / S1-01 2026-09] Public MQTT credentials are FORBIDDEN — the
+      # NEXT_PUBLIC_* fallback was deleted from the client; this negative case
+      # proves the gate ENFORCES the removal (a public credential config must
+      # BLOCK the production build).
+      - name: "(d) Public MQTT credentials — gate must FAIL (exit 1)"
+        run: |
+          set +e
+          NEXT_PUBLIC_MQTT_BROKER_URL='wss://broker.plts-monitoring.internal' \
+          NEXT_PUBLIC_API_BASE_URL='https://plts-tunnel.example.com' \
+          NEXT_PUBLIC_MQTT_USERNAME='viewer' \
+          NEXT_PUBLIC_MQTT_PASSWORD='some-secret' \
+          node scripts/validate-production-config.mjs --mode production
+          rc=$?
+          set -e
+          if [ "$rc" -ne 1 ]; then
+            echo "GATE BROKEN: a public MQTT credential config must BLOCK (expected exit 1, got $rc)"
+            exit 1
+          fi
+          echo "OK: public MQTT credentials blocked (exit 1)"
+
+      - name: "(e) Staging channel sanity — explicit staging override must be allowed"
         run: |
           set -e
           NEXT_PUBLIC_RELEASE_CHANNEL='staging' \

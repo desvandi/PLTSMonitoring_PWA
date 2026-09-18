@@ -5,6 +5,15 @@ import { ok, fail, unauthorized } from '@/lib/apiResponse';
 
 export const runtime = 'nodejs';
 
+// [GATE-2 / F2-AUTH-008 2026-09] Auth responses carry session/CSRF state —
+// never cacheable by intermediaries or the browser.
+function authJson<T>(data: T, message: string, status = 200) {
+  const res = status === 200 ? ok(data, message) : fail(message, status);
+  res.headers.set('Cache-Control', 'private, no-store');
+  res.headers.set('Pragma', 'no-cache');
+  return res;
+}
+
 // Simple in-memory rate limiter
 const rateMap = new Map<string, { count: number; firstAt: number; blockedUntil: number }>();
 // [audit-2 S-16 FIX] Progressive backoff: was fixed 5 attempts → 60s lock.
@@ -81,5 +90,8 @@ export async function POST(req: NextRequest) {
   rateMap.delete(ip);
   const session = await createSession(username);
   await getStore();
-  return ok(session, 'Login successful');
+  // [GATE-2 / F2-AUTH-007] session contains ONLY csrfToken/expiresAt/username
+  // — the JWT bearer itself is HttpOnly-cookie-only and never appears in the
+  // response body. [F2-AUTH-008] no-store on every auth path.
+  return authJson(session, 'Login successful');
 }

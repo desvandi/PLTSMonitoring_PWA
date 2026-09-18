@@ -25,49 +25,64 @@ import type { SystemStatus, ActivityLog } from "./types";
 // the browser (Next.js inlines NEXT_PUBLIC_* at build time) but lets tests
 // stub the environment per-case without module gymnastics.
 const brokerUrl = (): string => process.env.NEXT_PUBLIC_MQTT_BROKER_URL || "";
-const brokerUsername = (): string => process.env.NEXT_PUBLIC_MQTT_USERNAME || "";
-const brokerPassword = (): string => process.env.NEXT_PUBLIC_MQTT_PASSWORD || "";
 
 /**
- * [AUDIT p.486-old REMEDIATION 2026-09] Server-held MQTT credentials.
- * Preferred source: the authenticated same-origin route /api/mqtt/credentials
- * (env MQTT_USERNAME/MQTT_PASSWORD on the server — NEVER baked into the public
- * bundle). Backwards-compatible fallback: NEXT_PUBLIC_* values (documented as
- * VIEWER, READ-ONLY-ACL credentials; must never carry publish rights).
- * Pure-MQTT viewer deployments without a PWA login keep working through the
- * fallback; new deployments should provision server-side credentials and a
- * read-only broker ACL instead.
+ * [GATE-3 / S1-01 REMEDIATION 2026-09 — NO PUBLIC MQTT CREDENTIALS]
+ * The ONLY credential source is the authenticated same-origin route
+ * /api/mqtt/credentials (env MQTT_USERNAME/MQTT_PASSWORD on the server —
+ * NEVER baked into the public bundle).
+ *
+ * Audit Phase 10 S1-01 / Phase 5 F5-01 / Phase 2 F2-AUTH-011: the legacy
+ * NEXT_PUBLIC_MQTT_USERNAME / NEXT_PUBLIC_MQTT_PASSWORD fallback let a
+ * misconfigured Vercel deployment inline the broker password into the
+ * browser JS bundle. The fallback is DELETED — if the credential route
+ * fails or returns no credential, connectMqtt() fails CLOSED and no MQTT
+ * connection is attempted. Production deployments MUST provision
+ * MQTT_USERNAME/MQTT_PASSWORD server-side; validate-production-config.mjs
+ * now FAILS the build if either NEXT_PUBLIC_* credential variable is set.
  */
 async function resolveMqttCredentials(): Promise<{
-  username?: string;
-  password?: string;
+  username: string;
+  password: string;
 }> {
+  let res: Response;
   try {
-    const res = await fetch("/api/mqtt/credentials", {
+    res = await fetch("/api/mqtt/credentials", {
       credentials: "include",
       cache: "no-store",
       signal: AbortSignal.timeout(3000),
     });
-    if (res.ok) {
-      const json = (await res.json()) as {
-        success?: boolean;
-        data?: { username?: string; password?: string };
-      } | null;
-      if (json?.data?.username) {
-        return {
-          username: json.data.username,
-          password: json.data.password ?? "",
-        };
-      }
-    }
   } catch {
-    // Route unreachable (offline dev, test env, unauthenticated session) —
-    // fall through to the compatibility path below.
+    throw new Error(
+      "MQTT credentials unavailable: /api/mqtt/credentials could not be " +
+        "reached. No fallback exists — the connection is refused (fail-closed).",
+    );
   }
-  const u = brokerUsername();
-  const p = brokerPassword();
-  if (u) return { username: u, password: p };
-  return {};
+  if (!res.ok) {
+    // 401 = unauthenticated session; 503 = credentials not configured on
+    // the server. Both are honest refusals — NEVER a reason to fall back to
+    // any public/build-time credential. (Message deliberately avoids the
+    // env-var tokens so a bundle scan for credential markers stays clean.)
+    throw new Error(
+      `MQTT credentials unavailable: the credential endpoint answered ${res.status}. ` +
+        "Authenticate and ensure the server-side viewer credential is " +
+        "provisioned (ask the operator; served only via the credential " +
+        "endpoint). No fallback exists — the connection is refused (fail-closed).",
+    );
+  }
+  const json = (await res.json().catch(() => null)) as {
+    success?: boolean;
+    data?: { username?: string; password?: string };
+  } | null;
+  const username = json?.data?.username?.trim() || "";
+  const password = json?.data?.password?.trim() || "";
+  if (!username || !password) {
+    throw new Error(
+      "MQTT credentials unavailable: the credential endpoint returned no " +
+        "credential. No fallback exists — the connection is refused (fail-closed).",
+    );
+  }
+  return { username, password };
 }
 
 // [PWA-19] Diagnostics logging gated to development — the previous build
@@ -215,9 +230,9 @@ export function connectMqtt(deviceId: string): Promise<void> {
     );
   }
 
-  // [p.486-old REMEDIATION] Server-held credentials resolve BEFORE the
-  // connection is opened (authenticated route first, documented
-  // NEXT_PUBLIC viewer pair as the compatibility fallback).
+  // [GATE-3 / S1-01] Credentials resolve from the AUTHENTICATED server route
+  // BEFORE the connection is opened — there is NO fallback path. A credential
+  // failure rejects the connection attempt (fail-closed).
   return resolveMqttCredentials().then((creds) => {
     if (state.client) {
       state.client.end(true);
@@ -243,8 +258,8 @@ export function connectMqtt(deviceId: string): Promise<void> {
       reconnectPeriod: 1000,
       connectTimeout: 10000,
       clean: true,
-      ...(creds.username ? { username: creds.username } : {}),
-      ...(creds.password ? { password: creds.password } : {}),
+      username: creds.username,
+      password: creds.password,
     });
 
     // [p.486-old/p.487] The connection lifecycle now settles inside an inner

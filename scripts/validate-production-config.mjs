@@ -181,6 +181,28 @@ if (brokerUrl !== "") {
   }
 }
 
+// --- 6b. [GATE-3 / S1-01 REMEDIATION 2026-09] PUBLIC MQTT CREDENTIALS = BLOCKED -
+// The NEXT_PUBLIC_MQTT_USERNAME / NEXT_PUBLIC_MQTT_PASSWORD fallback was
+// DELETED from src/lib/mqtt.ts (audit Phase 10 S1-01: a misconfigured
+// deployment could inline the broker password into the public JS bundle).
+// This gate makes the removal ENFORCED: setting either variable now FAILS the
+// production configuration check — the only accepted credential path is the
+// server-side MQTT_USERNAME / MQTT_PASSWORD served by /api/mqtt/credentials.
+{
+  const pubUser = env("NEXT_PUBLIC_MQTT_USERNAME");
+  const pubPass = env("NEXT_PUBLIC_MQTT_PASSWORD");
+  if (pubUser !== "" || pubPass !== "") {
+    fail(
+      "NEXT_PUBLIC_MQTT_USERNAME / NEXT_PUBLIC_MQTT_PASSWORD must NOT be set — " +
+        "public MQTT credentials are forbidden (they would be inlined into the " +
+        "browser bundle). Provision MQTT_USERNAME / MQTT_PASSWORD server-side " +
+        "(served only via /api/mqtt/credentials).",
+    );
+  } else {
+    pass("no public MQTT credentials configured (server-held path only).");
+  }
+}
+
 // --- 7. Demo / mock mode --------------------------------------------------------
 const demo = env("NEXT_PUBLIC_DEMO_MODE").toLowerCase();
 if (demo === "true" || demo === "1") {
