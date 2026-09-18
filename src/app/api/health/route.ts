@@ -98,9 +98,13 @@ export async function GET(request: Request) {
     mqttBrokerConfigured: Boolean(
       process.env.NEXT_PUBLIC_MQTT_BROKER_URL?.trim(),
     ),
+    // [GATE-3 / S1-01 REMEDIATION 2026-09] Readiness now reflects the SERVER-side
+    // credential source (/api/mqtt/credentials env vars) — the only credential
+    // path since the NEXT_PUBLIC_* fallback was deleted. Audit Phase 3
+    // P3-S2-05: the old check read NEXT_PUBLIC_MQTT_USERNAME/PASSWORD, which
+    // (a) reported the WRONG source and (b) legitimized public credentials.
     mqttCredentialsConfigured: Boolean(
-      process.env.NEXT_PUBLIC_MQTT_USERNAME?.trim() &&
-        process.env.NEXT_PUBLIC_MQTT_PASSWORD?.trim(),
+      process.env.MQTT_USERNAME?.trim() && process.env.MQTT_PASSWORD?.trim(),
     ),
     gasUrlConfigured: gasUrl.length > 0,
     jwtSecretConfigured: jwtSecret.length >= 32,
