@@ -4,7 +4,7 @@ import { ReactNode, useState, useEffect } from 'react';
 import { useUiStore, type ViewKey } from '@/lib/store';
 import { useLanguage } from '@/components/providers/language-provider';
 import { useAuth } from '@/components/providers/auth-provider';
-import { useMqtt } from '@/components/providers/mqtt-provider';
+import { getTelemetryFreshness } from '@/lib/mqtt';
 import { useVersion, useStatus } from '@/hooks/useApi';
 import { canOpenView as canOpenViewFor } from '@/lib/view-authorization';
 import { cn } from '@/lib/utils';
@@ -100,9 +100,13 @@ export function AppShell({ children }: { children: ReactNode }) {
     setMobileNavOpen(false);
   };
 
+  // [GATE-5 / F5-03] Telemetry freshness — recomputed on every render (the
+  // shell clock ticks every second, so the badge stays current). A broker
+  // connection with a silent device is STALE, not "Connected". The freshness
+  // state subsumes the old Connected/Disconnected badge signal.
+  const telemetryFreshness = getTelemetryFreshness();
   const rssiInfo = status ? formatRssi(status.health.wifiRssi) : null;
   const hasRestApi = Boolean(process.env.NEXT_PUBLIC_API_BASE_URL);
-  const { connected: mqttConnected } = useMqtt();
   const { isMqttMode, isGasMode } = useAuth();
   // [AUDIT 2026-08-28 F9] Mode badge must NEVER lie: a GAS-cloud deployment
   // (no REST base URL, no broker) is GAS mode — not "mock". Mock/demo only
@@ -223,10 +227,21 @@ export function AppShell({ children }: { children: ReactNode }) {
             {isMqttMode ? (
               <Badge
                 variant="outline"
-                className="hidden sm:inline-flex text-xs font-normal text-status-on border-status-on/30"
+                className={
+                  telemetryFreshness === 'FRESH'
+                    ? 'hidden sm:inline-flex text-xs font-normal text-status-on border-status-on/30'
+                    : 'hidden sm:inline-flex text-xs font-normal text-amber-500 border-amber-500/30'
+                }
+                data-testid={
+                  telemetryFreshness === 'STALE' ? 'mode-badge-mqtt-stale' : 'mode-badge-mqtt'
+                }
               >
                 <Radio className="w-3 h-3 mr-1" />
-                MQTT {mqttConnected ? 'Connected' : 'Disconnected'}
+                {telemetryFreshness === 'FRESH'
+                  ? 'MQTT Connected'
+                  : telemetryFreshness === 'STALE'
+                    ? 'MQTT · Telemetry STALE'
+                    : 'MQTT Disconnected'}
               </Badge>
             ) : isGasMode ? (
               <Badge
