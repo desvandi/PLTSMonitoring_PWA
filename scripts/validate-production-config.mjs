@@ -154,6 +154,26 @@ if (apiBase !== "") {
       fail(`NEXT_PUBLIC_API_BASE_URL points at localhost ("${u.host}") — a development fallback. Production must use the device's LAN address or a Cloudflare Tunnel URL.`);
     } else if (u.protocol !== "https:" && u.protocol !== "http:") {
       fail(`NEXT_PUBLIC_API_BASE_URL scheme "${u.protocol}" is invalid (use https:// or http://LAN-address).`);
+    } else if (u.protocol === "http:") {
+      // [GATE-8 / A2-02 REMEDIATION 2026-09] audit Phase 10 A2-02 / Phase 6
+      // S2 design contradiction: the documented production transport is
+      // PWA -> HTTPS -> TLS gateway (Cloudflare Tunnel / nginx) -> device,
+      // and production cookies are Secure — yet the gate still ACCEPTED a
+      // plaintext http:// LAN base. A plaintext direct API sends session
+      // credentials + CSRF headers + device commands over the network in
+      // the clear. Production now requires https:// (MQTT-only production
+      // remains allowed without any direct API). Staging/development keep
+      // http:// for bench work (pass --mode staging).
+      if (MODE === "production") {
+        fail(
+          `NEXT_PUBLIC_API_BASE_URL must use https:// in production — got "http://${u.host}". ` +
+            "The documented production transport is the TLS gateway (Cloudflare Tunnel / nginx) in front " +
+            "of the device; plaintext direct API would expose session credentials and device commands. " +
+            "Use https:// (TLS gateway URL) or run an MQTT-only production (--mode staging keeps http:// for bench).",
+        );
+      } else {
+        pass(`API base URL OK (staging): ${u.protocol}//${u.host} — plaintext allowed in staging.`);
+      }
     } else {
       pass(`API base URL OK: ${u.protocol}//${u.host}.`);
     }

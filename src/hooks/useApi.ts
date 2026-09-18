@@ -6,7 +6,7 @@ import { api } from '@/lib/api';
 import { isValidInsight } from '@/lib/aiInsights';
 import { fetchGasInsights } from '@/lib/gasEnvelope';
 import { readSysConfig } from '@/lib/sysConfig';
-import { getMqttStatus, hasMqttStatus } from '@/lib/mqtt';
+import { getMqttStatus, hasMqttStatus, isTelemetryFresh } from '@/lib/mqtt';
 import { recordEnergySample } from '@/lib/energyHistory';
 
 export function useStatus() {
@@ -16,11 +16,18 @@ export function useStatus() {
     // live envelope, it IS the telemetry source — the REST poll is bypassed
     // (in MQTT-only production mode /api/status would 401 and kill the query).
     // The MQTT provider writes every envelope into this same cache key.
+    //
+    // [GATE-5 / F5-03 REMEDIATION 2026-09] The envelope is the source ONLY
+    // while telemetry is FRESH (connected + age ≤ MQTT_TELEMETRY_FRESH_MS).
+    // A STALE envelope (device stopped publishing while the socket lives) or
+    // an OFFLINE one is historical display data — never presented as live
+    // state. The query falls back to REST, which fails honestly in MQTT-only
+    // mode (error state) instead of silently rendering a stale sample.
     queryFn: () => {
-      if (hasMqttStatus()) return getMqttStatus()!;
+      if (hasMqttStatus() && isTelemetryFresh()) return getMqttStatus()!;
       return api.status();
     },
-    refetchInterval: () => (hasMqttStatus() ? 2000 : 5000),
+    refetchInterval: () => (isTelemetryFresh() ? 2000 : 5000),
     staleTime: 3000,
   });
 }

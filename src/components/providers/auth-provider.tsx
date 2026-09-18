@@ -8,12 +8,16 @@
 // In REST mode, login uses username/password → JWT cookie + CSRF token.
 // =============================================================================
 
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { api, setCsrfToken } from '@/lib/api';
 import type { SessionInfo } from '@/lib/types';
 import { useMqtt } from '@/components/providers/mqtt-provider';
 import { useSysConfig } from '@/components/providers/sys-config-provider';
 import { pingGasEndpoint } from '@/lib/sysConfig';
+// [GATE-6 / F2-AUTH-009 2026-09] Device/admin token lifecycle — logout clears
+// the sessionStorage credential stores, they do not survive the session.
+import { clearAllAuthTokens } from '@/lib/authTokenSession';
+import { clearAllAdminTokens } from '@/lib/adminTokenSession';
 
 // [AUDIT 2026-08-28 F9 — GAS cloud session]
 // In the documented zero-touch deployment (PWA on Vercel, no env vars, no
@@ -73,6 +77,34 @@ const MQTT_SESSION: SessionInfo = {
   role: 'viewer',
 };
 
+// [GATE-6 / F2-AUTH-004 2026-09] Logout is a TERMINATION event that must
+// survive a page refresh within the browser session: the flag lives in
+// sessionStorage and suppresses the automatic GAS PING re-authentication
+// until the user EXPLICITLY re-authenticates (login / explicit device
+// reconnect). Cleared by login() and by an explicit device switch.
+const LOGGED_OUT_FLAG = 'plts_logged_out';
+
+function readLoggedOutFlag(): boolean {
+  try {
+    return window.sessionStorage.getItem(LOGGED_OUT_FLAG) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeLoggedOutFlag(value: boolean): void {
+  try {
+    if (value) {
+      window.sessionStorage.setItem(LOGGED_OUT_FLAG, '1');
+    } else {
+      window.sessionStorage.removeItem(LOGGED_OUT_FLAG);
+    }
+  } catch {
+    // sessionStorage unavailable (SSR / hardened browser) — the in-memory
+    // ref still guards the current mount.
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const { connected: mqttConnected, disconnect: mqttDisconnect } = useMqtt();
   const { config } = useSysConfig();
@@ -82,11 +114,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // yang bisa saling bertentangan + cascading render.
   const [restSession, setRestSession] = useState<SessionInfo>(DEFAULT_SESSION);
   const [restLoading, setRestLoading] = useState(true);
+  // [GATE-6 / F2-AUTH-004 2026-09] Logout latch — mirrors the sessionStorage
+  // flag (survives refresh) and suppresses the automatic GAS PING
+  // re-authentication until an EXPLICIT login / device reconnect.
+  const loggedOutRef = useRef<boolean>(false);
 
   const refresh = useCallback(async () => {
     // Mode MQTT: sesi efektif sudah dicakup derived state; panggilan REST
     // /api/session hanya akan 401 di produksi MQTT-only — jangan panggil.
     if (mqttConnected) return;
+    // [GATE-6 / F2-AUTH-004] After an explicit logout the user stays
+    // UNAUTHENTICATED — no automatic GAS PING, no resurrected viewer
+    // session. Only an explicit re-authentication clears the latch.
+    if (loggedOutRef.current || readLoggedOutFlag()) {
+      loggedOutRef.current = true;
+      setRestSession(DEFAULT_SESSION);
+      setRestLoading(false);
+      return;
+    }
     try {
       const s = await api.session();
       if (s.isAuthenticated) {
@@ -155,6 +200,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // relevan saat mode REST/GAS.
       const result = await api.login(username, password);
       setCsrfToken(result.csrfToken);
+      // [GATE-6 / F2-AUTH-004] An EXPLICIT login is the sanctioned path back
+      // after logout — the auto-PING suppression latch is released here.
+      loggedOutRef.current = false;
+      writeLoggedOutFlag(false);
       setRestSession({
         isAuthenticated: true,
         username: result.username,
@@ -166,17 +215,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(async () => {
-    // [p.485a REMEDIATION 2026-09] Logout is a SESSION TERMINATION event for
-    // EVERY transport the operator authenticated with — not just the active
-    // one. Previously the MQTT-connected branch returned early WITHOUT
-    // calling api.logout(): the HttpOnly JWT cookie survived (up to the 1 h
-    // TTL) and a refresh → /api/session restored the operator session
-    // (REST login → MQTT connect → logout → JWT masih hidup).
+    // [GATE-6 / F2-AUTH-004 + F2-AUTH-009 REMEDIATION 2026-09]
+    // audit Phase 2 F2-AUTH-004: the OLD tail recreated the GAS viewer
+    // session on logout (`setRestSession(config && !LAN_LOGIN_AVAILABLE ?
+    // GAS_CLOUD_SESSION : ...)`) — "logout" immediately re-authenticated the
+    // operator as gas-viewer, and refresh() auto-PINGed GAS back into a
+    // session. A shared PC inherited the previous user's access after
+    // logout + refresh.
     //
-    // New contract: when an operator REST session exists (restSession
-    // authenticated), logout ALWAYS revokes it server-side — even if MQTT is
-    // currently connected — plus clears the CSRF cache. The GAS/MQTT viewer
-    // fallbacks then apply as before.
+    // Logout is now a TERMINATION event for EVERY transport:
+    //   1. MQTT disconnected,
+    //   2. REST session revoked server-side (when it existed),
+    //   3. CSRF cache cleared,
+    //   4. GAS device auth tokens + admin tokens CLEARED from sessionStorage
+    //      (F2-AUTH-009 — they no longer survive the authentication session),
+    //   5. the logout latch is set (survives refresh) so refresh() performs
+    //      NO automatic GAS PING and grants NO viewer session,
+    //   6. the session state is explicitly UNAUTHENTICATED.
+    // Only an explicit login (or an explicit device reconnect in /setup)
+    // clears the latch and re-authenticates.
     const hadRestSession = restSession.isAuthenticated;
     if (mqttConnected) {
       mqttDisconnect();
@@ -191,10 +248,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
     setCsrfToken(null);
-    // [F9] Logging out of REST does not erase the local GAS profile — the
-    // operator returns to the (viewer-scoped) GAS session, mirroring MQTT.
-    setRestSession(config && !LAN_LOGIN_AVAILABLE ? GAS_CLOUD_SESSION : DEFAULT_SESSION);
-  }, [mqttConnected, mqttDisconnect, config, restSession.isAuthenticated]);
+    // [F2-AUTH-009] Credential lifecycle ends with the authentication
+    // session — device tokens and admin tokens do NOT survive logout.
+    clearAllAuthTokens();
+    clearAllAdminTokens();
+    // [F2-AUTH-004] Latch + explicit unauthenticated state (the stored GAS
+    // profile remains for the NEXT explicit connect — possession of the
+    // profile is not authentication, and the auto-PING is suppressed).
+    loggedOutRef.current = true;
+    writeLoggedOutFlag(true);
+    setRestSession(DEFAULT_SESSION);
+  }, [mqttConnected, mqttDisconnect, restSession.isAuthenticated]);
 
   return (
     <AuthContext.Provider

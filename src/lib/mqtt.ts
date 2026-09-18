@@ -121,6 +121,31 @@ const onlineCallbacks = new Set<OnlineCallback>();
 let lastStatus: SystemStatus | null = null;
 let lastStatusAtMs = 0;
 
+// [GATE-5 / F5-03 + P7-S1-04 REMEDIATION 2026-09 — TELEMETRY FRESHNESS CONTRACT]
+// audit Phase 5 F5-03 / Phase 7 P7-S1-04: transport state (broker connected)
+// and TELEMETRY freshness are different facts. The OLD code treated
+// hasMqttStatus() === true as "the dashboard value is live" — a stale
+// envelope kept rendering as current data after the broker connection died
+// OR after the device stopped publishing while the socket stayed alive.
+// Contract (3 × the firmware's 5 s telemetry interval):
+//   FRESH   — connected AND envelope age ≤ MQTT_TELEMETRY_FRESH_MS
+//   STALE   — connected but the device stopped publishing (age over budget)
+//   OFFLINE — no connection (envelope, if any, is historical display data)
+// Control logic and the status source must use FRESH only; a STALE sample
+// is never presented as live state.
+export const MQTT_TELEMETRY_FRESH_MS = 15_000;
+
+export type TelemetryFreshness = "FRESH" | "STALE" | "OFFLINE";
+
+export function getTelemetryFreshness(): TelemetryFreshness {
+  if (!state.connected || lastStatus === null) return "OFFLINE";
+  return Date.now() - lastStatusAtMs <= MQTT_TELEMETRY_FRESH_MS ? "FRESH" : "STALE";
+}
+
+export function isTelemetryFresh(): boolean {
+  return getTelemetryFreshness() === "FRESH";
+}
+
 export function hasMqttStatus(): boolean {
   return lastStatus !== null;
 }
@@ -422,6 +447,9 @@ export function connectMqtt(deviceId: string): Promise<void> {
     client.on("offline", () => {
       mqttLog("offline");
       state.connected = false;
+      // [GATE-5 / F5-03] Transport lost → the cached envelope is now
+      // HISTORICAL display data, never a live source (freshness → OFFLINE via
+      // state.connected=false; lastStatus is kept for context only).
       onlineCallbacks.forEach((cb) => cb(false));
     });
 
